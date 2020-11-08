@@ -1,0 +1,2979 @@
+---
+title: "Respiratory tract metagenome (newborns)"
+author: "Marie-Madlen Pust"
+date: "07 Nov 2020"
+output: html_document
+---
+
+
+```{r}
+#Clear environment
+rm(list=ls())
+```
+
+
+```{r}
+# Load packages ####e
+library(ggplot2)
+library(vegan) # version: vegan 2.5-5
+library(plyr)
+library(dplyr)
+library(magrittr)
+library(summarytools)
+library(graphics)
+library(scales)
+library(tidyverse) 
+library(grid)
+library(viridis)
+library(tidyr)
+library(DataCombine)
+library(factoextra)
+library(reshape2)
+library(knitr)
+library(gridExtra)
+library(matrixTests)
+library(funfuns)
+library(conover.test)
+library(ggpubr)
+library(corrr)
+library(rlang)
+library(ggrepel)
+library(corrplot)
+library(caret)
+library(rcompanion)
+library(data.table)
+library(pheatmap)
+library(RColorBrewer)
+library(Hmisc)
+library(viridis)
+library(readxl)
+library(kableExtra)
+library(data.table)
+library(formattable)
+library(tidyr)
+library(car)
+library(tidyverse)  # data manipulation
+library(cluster)    # clustering algorithms
+library(factoextra) # clustering visualization
+library(dendextend) # for comparing two dendrogr
+```
+
+
+```{r}
+
+# Preparation of meta data file
+# Import meta data ####
+metaData <- read_excel("tables/metaData_table_NGS.xlsx")
+metaData <- data.frame(metaData)
+# Set first column as row names
+rownames(metaData) = metaData[,1]
+# Remove first column
+metaData <- select(metaData, -ID)
+# Sort metaData alphabetically (ID)
+metaData <- metaData[order(row.names(metaData)),]
+
+# add age group category
+metaData$ageGroup <-with(metaData,
+       ifelse(metaData$Age_in_months <= 3, "0-3 months",
+       ifelse(metaData$Age_in_months < 12 & Age_in_months >= 4, "4-11 months",
+       ifelse(metaData$Age_in_months < 24 & Age_in_months >= 12, "1-3 years",
+       ifelse(metaData$Age_in_months < 36 & Age_in_months >= 24, "1-3 years",
+       ifelse(metaData$Age_in_months < 48 & Age_in_months >= 37, "1-3 years",   
+       ifelse(metaData$Age_in_months >= 36, "4-6 years", NA)))))))
+
+# Order age group category
+metaData$ageGroup <- factor(metaData$ageGroup, 
+                            levels = c("0-3 months", 
+                                       "4-11 months",
+                                       "1-3 years", #"2 years", 
+                                       "4-6 years"))
+
+# Generate file without longitudinal samples
+longitudinalSamples = c("MCF01s2", "MCF01s3", "MCF01s4", "MCF01s5", "MCF01s6", "MCF01s7",
+                        "MCF02s2", "MCF02s3", "MCF02s4", 
+                        "MCF04s2", "MCF05s2", "MCF06s2", "MCF06s3", "MCF06s4",
+                        "MCF07s2", "MCF07s3", "MCF08s2", "MCF08s3", "MCF09s2", "MCF09s3",
+                        "MCF10s2", "MCF11s2", "MCF11s3", "MCF12s2", "MCF12s3")
+
+spatial_metaData <- 
+  metaData[!(rownames(metaData) %in% longitudinalSamples),]
+
+```
+
+```{r}
+
+# Import normalised count table
+longitudinal_BCPHC <- 
+  read_delim("tables/absoluteAbundanceCounts.csv", 
+    ";", escape_double = FALSE, trim_ws = TRUE)
+
+longitudinal_BCPHC <- longitudinal_BCPHC[,1:125]
+longitudinal_BCPHC <- data.frame(longitudinal_BCPHC)
+# Keep only information on Bacteria
+longitudinal_BCPHC <- 
+  subset(longitudinal_BCPHC, Domain == "Bacteria")
+# Remove all rows that sum to zero
+longitudinal_BCPHC <- longitudinal_BCPHC[rowSums(longitudinal_BCPHC[, -c(1,2,3,4,5,6,7)] > 0) != 0, ]
+# remove species with hidden genome information, e.g. "Streptococcus sp." is not information on species level)
+longitudinal_BCPHC <- longitudinal_BCPHC[- grep(" sp", longitudinal_BCPHC$Species),]
+# remove phylum information
+longitudinal_BCPHC <- select(longitudinal_BCPHC, -c("Domain", "Phylum", "Class", "Genus", "Family", "Order"))
+rownames(longitudinal_BCPHC) <- longitudinal_BCPHC$Species
+longitudinal_BCPHC$Species <- NULL
+# sort alphabetically
+longitudinal_BCPHC <- longitudinal_BCPHC[order(row.names(longitudinal_BCPHC)),]
+
+longitudinal_BCPHC_CF <- longitudinal_BCPHC
+longitudinal_BCPHC_H <- longitudinal_BCPHC
+
+# Extract the 95 % of most abundant species in CF children
+# the first seven columns contain phyla information and are skipped for the calculation part
+listColCF_longitudinal <- 
+  colnames(longitudinal_BCPHC)[grep("EMCF|MC", colnames(longitudinal_BCPHC))]
+CF_table_longitudinal <- select(longitudinal_BCPHC, listColCF_longitudinal)
+longitudinal_BCPHC_CF$CFsum <- rowSums(CF_table_longitudinal)
+sum_total_CF_longitudinal = sum(longitudinal_BCPHC_CF$CFsum)
+longitudinal_BCPHC_CF$abundance <- 
+  (longitudinal_BCPHC_CF$CFsum / sum_total_CF_longitudinal) * 100
+# sort abundance column (decreasing)
+longitudinal_BCPHC_CF <- longitudinal_BCPHC_CF[order(longitudinal_BCPHC_CF$abundance, decreasing = TRUE),]  
+# sum abundance values
+longitudinal_BCPHC_CF$cumsum <- cumsum(longitudinal_BCPHC_CF$abundance)
+mostAbundant25_CF_longitudinal <- rownames(longitudinal_BCPHC_CF[1:25,])
+
+
+# 30 most abundant healthy 
+listColH_longitudinal <- 
+  colnames(longitudinal_BCPHC)[grep("KGCF", colnames(longitudinal_BCPHC))]
+H_table_longitudinal <- select(longitudinal_BCPHC, listColH_longitudinal)
+longitudinal_BCPHC_H$Hsum <- rowSums(H_table_longitudinal)
+sum_total_H_longitudinal = sum(longitudinal_BCPHC_H$Hsum)
+longitudinal_BCPHC_H$abundance <- 
+  (longitudinal_BCPHC_H$Hsum / sum_total_H_longitudinal) * 100
+# sort abundance column (decreasing)
+longitudinal_BCPHC_H <- longitudinal_BCPHC_H[order(longitudinal_BCPHC_H$abundance, decreasing = TRUE),]  
+# sum abundance values
+longitudinal_BCPHC_H$cumsum <- cumsum(longitudinal_BCPHC_H$abundance)
+mostAbundant25_H_longitudinal <- rownames(longitudinal_BCPHC_H[1:25,])
+
+# Combine most abundant species (LONGITUDINAL)
+list_30_mostAbundant_CF_H_longitudinal <- c(mostAbundant25_CF_longitudinal, 
+                                            mostAbundant25_H_longitudinal)
+newList_longitudinal <- 
+  list_30_mostAbundant_CF_H_longitudinal[!duplicated(list_30_mostAbundant_CF_H_longitudinal)]
+# TABLE with abundant species
+longitudinal_coreSpecies <- longitudinal_BCPHC[rownames(longitudinal_BCPHC) %in% newList_longitudinal ,]
+# turn core species table (samples as row, species as columns)
+longitudinal_coreSpecies1 <- t(longitudinal_coreSpecies)
+longitudinal_coreSpecies <- data.frame(longitudinal_coreSpecies)
+# sort core species table alphabetically
+longitudinal_coreSpecies <- longitudinal_coreSpecies[order(row.names(longitudinal_coreSpecies)),]
+
+
+
+# Get rare species (CF, LONGITUDINAL)
+longitudinal_rareSpecies <- longitudinal_BCPHC[!rownames(longitudinal_BCPHC) %in% newList_longitudinal ,]
+# Rare species (CF)
+Longitudinal_CF_table_rare <- select(longitudinal_rareSpecies, listColCF_longitudinal)
+# Rare species must occur in at least one third of CF samples (42 / 3 samples = 14)
+percent_CF_longitudinal <- (68 * 33.3) / 100
+all_patients_longitudinal_rare <- as.numeric(length(colnames(Longitudinal_CF_table_rare)))
+deleteTooRare_CF_longitudinal <- all_patients_longitudinal_rare - percent_CF_longitudinal
+
+longitudinal_rareSpecies_CF <- 
+  Longitudinal_CF_table_rare[rowSums(Longitudinal_CF_table_rare == 0) <= deleteTooRare_CF_longitudinal, ]
+longitudinal_names_rareSpecies_CF <- rownames(longitudinal_rareSpecies_CF)
+
+# Get rare species (Healthy)
+Longitudinal_H_table_rare <- select(longitudinal_rareSpecies, listColH_longitudinal)
+# Rare species must occur in at least one third of CF samples (42 / 3 samples = 14)
+percent_H_longitudinal <- (52 * 33.3) / 100
+all_H_longitudinal <- as.numeric(length(colnames(Longitudinal_H_table_rare)))
+deleteTooRare_H_longitudinal <- all_H_longitudinal - percent_H_longitudinal
+longitudinal_rareSpecies_H <- 
+  Longitudinal_H_table_rare[rowSums(Longitudinal_H_table_rare == 0) <= deleteTooRare_H_longitudinal, ]
+longitudinal_names_rareSpecies_H <- rownames(longitudinal_rareSpecies_H)
+
+# Combine both (LONGITUDINAL)
+longitudinal_list_rare_CF_H <- c(longitudinal_names_rareSpecies_CF, 
+                                 longitudinal_names_rareSpecies_H)
+newList_rare <- longitudinal_list_rare_CF_H[!duplicated(longitudinal_list_rare_CF_H)]
+# TABLE with rare species
+longitudinal_rareSpecies <- longitudinal_BCPHC[rownames(longitudinal_BCPHC) %in% newList_rare ,]
+longitudinal_rareSpecies2 <- t(longitudinal_rareSpecies)
+longitudinal_rareSpecies <- data.frame(longitudinal_rareSpecies2)
+
+# combine cleaned core species and rare species table (LONGITUDINAL)
+abundant_rare_species <- cbind(longitudinal_coreSpecies, 
+                               longitudinal_rareSpecies)
+
+
+
+
+# SPATIAL DATA
+# remove longitudinal samples
+spatial_BCPHC <- 
+  longitudinal_BCPHC[, !(colnames(longitudinal_BCPHC) %in% longitudinalSamples)]
+spatial_BCPHC_CF <- spatial_BCPHC 
+spatial_BCPHC_H <- spatial_BCPHC 
+
+# Extract the 95 % of most abundant species in CF children (SPATIAL DATA)
+# the first seven columns contain phyla information and are skipped for the calculation part
+listColCF <- colnames(spatial_BCPHC_CF)[grep("EMCF|MC", colnames(spatial_BCPHC_CF))]
+CF_table <- select(spatial_BCPHC, listColCF)
+spatial_BCPHC_CF$CFsum <- rowSums(CF_table)
+sum_total= sum(spatial_BCPHC_CF$CFsum)
+spatial_BCPHC_CF$abundance <- 
+  (spatial_BCPHC_CF$CFsum / sum_total) * 100
+# sort abundance column (decreasing)
+spatial_BCPHC_CF <- spatial_BCPHC_CF[order(spatial_BCPHC_CF$abundance, decreasing = TRUE),]  
+# sum abundance values
+spatial_BCPHC_CF$cumsum <- cumsum(spatial_BCPHC_CF$abundance)
+mostAbundant30_CF <- rownames(spatial_BCPHC_CF[1:25,])
+
+
+# 30 most abundant healthy (SPATIAL DATA)
+listColH <- colnames(spatial_BCPHC_H)[grep("KGCF", colnames(spatial_BCPHC_H))]
+H_table <- select(spatial_BCPHC_H, listColH)
+spatial_BCPHC_H$Hsum <- rowSums(H_table)
+sum_total= sum(spatial_BCPHC_H$Hsum)
+spatial_BCPHC_H$abundance <- 
+  (spatial_BCPHC_H$Hsum / sum_total) * 100
+# sort abundance column (decreasing)
+spatial_BCPHC_H <- spatial_BCPHC_H[order(spatial_BCPHC_H$abundance, decreasing = TRUE),]  
+# sum abundance values
+spatial_BCPHC_H$cumsum <- cumsum(spatial_BCPHC_H$abundance)
+mostAbundant30_H <- rownames(spatial_BCPHC_H[1:25,])
+
+list_30_mostAbundant_CF_H <- c(mostAbundant30_CF, mostAbundant30_H)
+newList <- list_30_mostAbundant_CF_H[!duplicated(list_30_mostAbundant_CF_H)]
+
+
+# TABLE with abundant species (SPATIAL DATA)
+spatial_coreSpecies <- spatial_BCPHC[rownames(spatial_BCPHC) %in% newList ,]
+# turn core species table (samples as row, species as columns)
+spatial_coreSpecies1 <- t(spatial_coreSpecies)
+spatial_coreSpecies <- data.frame(spatial_coreSpecies1)
+# sort core species table alphabetically
+spatial_coreSpecies <- spatial_coreSpecies[order(row.names(spatial_coreSpecies)),]
+
+
+# Get rare species (CF)(SPATIAL DATA)
+spatial_rareSpecies <- spatial_BCPHC[!rownames(spatial_BCPHC) %in% newList ,]
+# Rare species (CF)
+CF_table_rare <- select(spatial_rareSpecies, listColCF)
+#Rare species must occur in at least one third of CF samples (42 / 3 samples = 14)
+percent <- (41 * 33) / 100
+all_patients <- as.numeric(length(colnames(CF_table_rare)))
+deleteTooRare <- all_patients - percent
+spatial_rareSpecies_CF <- CF_table_rare[rowSums(CF_table_rare == 0) <= deleteTooRare, ]
+names_rareSpecies_CF <- rownames(spatial_rareSpecies_CF)
+
+# Get rare species (Healthy)(SPATIAL DATA)
+H_table_rare <- select(spatial_rareSpecies, listColH)
+#Rare species must occur in at least one third of CF samples (42 / 3 samples = 14)
+percent_H <- (52 * 33) / 100
+all_H <- as.numeric(length(colnames(H_table_rare)))
+deleteTooRareH <- all_H - percent_H
+spatial_rareSpecies_H <- H_table_rare[rowSums(H_table_rare == 0) <= deleteTooRareH, ]
+names_rareSpecies_H <- rownames(spatial_rareSpecies_H)
+
+# Combine both (SPATIAL DATA)
+list_rare_CF_H <- c(names_rareSpecies_CF, names_rareSpecies_H)
+newList_rare <- list_rare_CF_H[!duplicated(list_rare_CF_H)]
+# TABLE with rare species
+spatial_rareSpecies <- spatial_BCPHC[rownames(spatial_BCPHC) %in% newList_rare ,]
+spatial_rareSpecies2 <- t(spatial_rareSpecies)
+spatial_rareSpecies <- data.frame(spatial_rareSpecies2)
+
+# combine cleaned core species and rare species table (SPATIAL DATA)
+abundant_rare_species <- cbind(spatial_coreSpecies, spatial_rareSpecies)
+
+
+```
+
+
+```{r}
+CF <- mostAbundant30_CF[1:30]
+Healthy <- mostAbundant30_H[1:30]
+
+both <- CF[CF %in% Healthy] # in both, same as call: intersect(first, second)
+onlyfirst <- CF[!CF %in% Healthy] # only in 'first', same as: setdiff(first, second)
+onlyfirst
+onlysecond <- Healthy[!Healthy %in% CF] # only in 'second', same as: setdiff(second, first)
+onlysecond
+length(both)
+length(onlyfirst)
+length(onlysecond)
+
+
+```
+
+
+
+
+
+```{r}
+
+# Add alpha diversity information to meta data(core species)
+spatial_metaData$abundant_shannon <- diversity(spatial_coreSpecies, index = "shannon", MARGIN = 1)
+spatial_metaData$abundant_simpson <- diversity(spatial_coreSpecies, index = "simpson", MARGIN = 1)
+spatial_metaData$abundant_specNumber <- specnumber(spatial_coreSpecies, MARGIN = 1)
+spatial_metaData$abundant_richness <- 
+  spatial_metaData$abundant_specNumber / sqrt(length(spatial_metaData$abundant_specNumber))
+spatial_metaData$abundant_bacterialBurden <- round(rowSums(spatial_coreSpecies),0)
+
+# Add alpha diversity information (rare species)
+spatial_metaData$rare_shannon <- diversity(spatial_rareSpecies, index = "shannon", MARGIN = 1)
+spatial_metaData$rare_simpson <- diversity(spatial_rareSpecies, index = "simpson", MARGIN = 1)
+spatial_metaData$rare_specNumber <- specnumber(spatial_rareSpecies, MARGIN = 1)
+spatial_metaData$rare_richness <- 
+  spatial_metaData$rare_specNumber / sqrt(length(spatial_metaData$rare_specNumber))
+spatial_metaData$rare_bacterialBurden <- rowSums(spatial_rareSpecies)
+
+
+longitudinal_coreSpecies <- data.frame(longitudinal_coreSpecies1)
+# Add alpha diversity information to meta data(core species) # LONGITUDINAL!!!
+metaData$LONGI_abundant_shannon <- diversity(longitudinal_coreSpecies, index = "shannon", MARGIN = 1)
+metaData$LONGI_abundant_simpson <- diversity(longitudinal_coreSpecies, index = "simpson", MARGIN = 1)
+metaData$LONGI_abundant_specNumber <- specnumber(longitudinal_coreSpecies, MARGIN = 1)
+metaData$LONGI_abundant_richness <- 
+  metaData$LONGI_abundant_specNumber / sqrt(length(longitudinal_coreSpecies$LONGI_abundant_specNumber))
+metaData$LONGI_abundant_bacterialBurden <- round(rowSums(longitudinal_coreSpecies),0)
+
+# Add alpha diversity information (rare species) # LONGITUDINAL!!!
+metaData$LONGI_rare_shannon <- diversity(longitudinal_rareSpecies, index = "shannon", MARGIN = 1)
+metaData$LONGI_rare_simpson <- diversity(longitudinal_rareSpecies, index = "simpson", MARGIN = 1)
+metaData$LONGI_rare_specNumber <- specnumber(longitudinal_rareSpecies, MARGIN = 1)
+metaData$LONGI_rare_richness <- 
+  metaData$LONGI_rare_specNumber / sqrt(length(longitudinal_rareSpecies$rare_specNumber))
+metaData$LONGI_rare_bacterialBurden <- rowSums(longitudinal_rareSpecies)
+```
+
+
+# Investigations of *Pseudomonas aeruginosa* and *Staphylococcus aureus*
+# Pseudomonas aeruginosa ###
+```{r}
+# Pseudomonas aeruginosa
+healthy_PA <- subset(spatial_metaData, state == "Healthy")
+diseased_PA <- subset(spatial_metaData, state == "CF")
+
+
+healthy_PA$PA_category <- factor(healthy_PA$PA_category, levels = c("absent", "present"))
+diseased_PA$PA_category <- factor(diseased_PA$PA_category, levels = c("absent", "present"))
+healthy_PA$SA_category <- factor(healthy_PA$SA_category, levels = c("absent", "present"))
+diseased_PA$SA_category <- factor(diseased_PA$SA_category, levels = c("absent", "present"))
+
+# Has PA an effect on diversity or bacterial load?
+PA_abundant_diversity <- 
+  ggerrorplot(spatial_metaData, 
+            x = "PA_category", y = "abundant_shannon",
+            main = "", xlab = "", 
+            ylab = "SDI",
+            desc_stat = "median", 
+            ggtheme = theme_pubr(base_size = 14, 
+                                 base_family = "Helvetica",
+                                 border = TRUE),
+            add = c("boxplot", "point"), add.params = list(color = "black")) +
+  scale_y_continuous(limits = c(0,6), breaks = c(0,2.5,5)) +
+  labs(title = "", subtitle = "Core species", caption = "") 
+  #stat_compare_means(method = "wilcox.test", size = 4.5, label = "p.format",
+   #                  family = "Helvetica", label.y = 6.0, label.x.npc = "left") 
+
+
+PA_abundant_load <- 
+  ggerrorplot(spatial_metaData, 
+            x = "PA_category", y = "abundant_bacterialBurden",
+            main = "", xlab = "", ylab = "Bacterial load",
+            desc_stat = "median", 
+            ggtheme = theme_pubr(base_size = 14, 
+                                 base_family = "Helvetica",
+                                 border = TRUE),
+            add = c("boxplot", "point"), add.params = list(color = "black")) +
+  ylim(0,25000) +
+  labs(title = "", subtitle = "Core species", caption = "") 
+  #stat_compare_means(method = "wilcox.test", label.y = 30000, size = 4.5, label = "p.format",
+   #                  family = "Helvetica", label.x.npc = "left") 
+
+
+
+PA_rare_diversity <- 
+  ggerrorplot(spatial_metaData, 
+            x = "PA_category", y = "rare_shannon",
+            main = "", xlab = "", ylab = "SDI",
+            desc_stat = "median", 
+            ggtheme = theme_pubr(base_size = 14, 
+                                 base_family = "Helvetica",
+                                 border = TRUE),
+            add = c("boxplot", "point"), add.params = list(color = "black")) +
+  scale_y_continuous(limits = c(0,6), breaks = c(0,2.5,5)) +
+  labs(title = "", subtitle = "Rare species", caption = "") 
+  #stat_compare_means(method = "wilcox.test", label.y = 6.0, size = 4.5, label = "p.format",
+   #                  family = "Helvetica", label.x.npc = "left") 
+
+
+
+PA_rare_load <-
+  ggerrorplot(spatial_metaData, 
+            x = "PA_category", y = "rare_bacterialBurden",
+            main = "", xlab = "", ylab = "Bacterial load",
+            desc_stat = "median", 
+            ggtheme = theme_pubr(base_size = 14, 
+                                 base_family = "Helvetica",
+                                 border = TRUE),
+            add = c("boxplot", "point"), 
+            add.params = list(color = "black")) +
+  ylim(0,25000) +
+  labs(title = "", subtitle = "Rare species", caption = "") 
+  #stat_compare_means(method = "wilcox.test", label.y = 30000, size = 4.5, label = "p.format",
+   #                  family = "Helvetica", label.x.npc = "left")
+
+
+
+# Calculate percentage of children with and without Pseudomonas per age group
+healthy_PA_2 <- healthy_PA
+healthy_PA_2$ageGroup <- str_replace(healthy_PA_2$ageGroup, "0-3 months", "0 years")
+healthy_PA_2$ageGroup <- str_replace(healthy_PA_2$ageGroup, "4-11 months", "0 years")
+
+prop_healthy <- table(healthy_PA_2$ageGroup, healthy_PA_2$PA_category)
+prop_healthy <- data.frame(prop_healthy)
+prop_healthy$Perc <- c(28, 9, 15, 28, 9, 15)
+prop_healthy$Result <- prop_healthy$Freq / prop_healthy$Perc * 100
+prop_healthy$state <- "Healthy"
+
+
+diseased_PA_2 <- diseased_PA
+diseased_PA_2$ageGroup <- str_replace(diseased_PA_2$ageGroup, "0-3 months", "0 years")
+diseased_PA_2$ageGroup <- str_replace(diseased_PA_2$ageGroup, "4-11 months", "0 years")
+
+prop_diseased <- table(diseased_PA_2$ageGroup, diseased_PA_2$PA_category)
+prop_diseased <- data.frame(prop_diseased)
+prop_diseased$Perc <- c(5, 20, 16, 5, 20, 16)
+prop_diseased$Result <- prop_diseased$Freq / prop_diseased$Perc * 100
+prop_diseased$state <- "CF"
+
+merged_prop_diseased_healthy <- rbind(prop_healthy, prop_diseased)
+
+
+a <-
+  ggplot(merged_prop_diseased_healthy, 
+       aes(x=Var1, y=Result, fill=Var2)) +
+  geom_bar(position="stack", stat="identity", color="black", width=0.9) +
+  facet_wrap(~ state) +
+  xlab("") +
+  ylab("Proportion of patients (in %)") +
+  scale_fill_manual(expression(italic("P. aeruginosa")), 
+                    values = c("absent" = "grey60", 
+                               "present" = "black")) + 
+  theme_pubr(base_size = 14, 
+             base_family = "Helvetica",
+             border = TRUE) +
+  theme(axis.text.x = element_text(angle=0),
+        strip.text = element_text(size=14),
+        legend.text = element_text(size = 14)) +
+  coord_flip()
+  
+pA <-
+  ggarrange(a, labels = "a",
+           ggarrange(PA_abundant_diversity, PA_abundant_load,
+                     PA_rare_diversity, PA_rare_load, nrow = 1, ncol = 4,
+                     heights = c(2,2),
+                     labels = c("b", "c", "d", "e")),
+           ncol = 1, heights = c(2,4))
+
+
+
+#ggsave("Figure06_Nov2020_NPJ.pdf", 
+ #      device="pdf",
+  #     plot = pA,
+   #    width = 10.9,
+    #   height = 9.15,
+     #  scale = 1,
+      # dpi = 1200)
+#dev.off()
+```
+
+# Staphylococcus aureus ###
+```{r}
+# Staphylococcus aureus
+# Has PA an effect on diversity or bacterial load?
+SA_abundant_diversity <- 
+  ggerrorplot(spatial_metaData, 
+            x = "SA_category", y = "abundant_shannon",
+            main = "", xlab = "", 
+            ylab = "SDI",
+            desc_stat = "median", 
+            ggtheme = theme_pubr(base_size = 14, 
+                                 base_family = "Helvetica",
+                                 border = TRUE),
+            add = c("boxplot", "point"), add.params = list(color = "black")) +
+  scale_y_continuous(limits = c(0,6), breaks = c(0,2.5,5)) +
+  labs(title = "", subtitle = "Core species", caption = "") +
+  stat_compare_means(method = "wilcox.test", size = 4.5, label = "p.format",
+                     family = "Helvetica", label.x.npc = "left") 
+
+SA_abundant_load <- 
+  ggerrorplot(spatial_metaData, 
+            x = "SA_category", y = "abundant_bacterialBurden",
+            main = "", xlab = "", ylab = "Bacterial load",
+            desc_stat = "median", 
+            ggtheme = theme_pubr(base_size = 14, 
+                                 base_family = "Helvetica",
+                                 border = TRUE),
+            add = c("boxplot", "point"), add.params = list(color = "black")) +
+  ylim(0,25000) +
+  labs(title = "", subtitle = "Core species", caption = "") +
+  stat_compare_means(method = "wilcox.test", size = 4.5, label = "p.format",
+                     family = "Helvetica", label.x.npc = "left") 
+
+
+SA_rare_diversity <- 
+  ggerrorplot(spatial_metaData, 
+            x = "SA_category", y = "rare_shannon",
+            main = "", xlab = "", ylab = "SDI",
+            desc_stat = "median", 
+            ggtheme = theme_pubr(base_size = 14, 
+                                 base_family = "Helvetica",
+                                 border = TRUE),
+            add = c("boxplot", "point"), add.params = list(color = "black")) +
+  scale_y_continuous(limits = c(0,6), breaks = c(0,2.5,5)) +
+  labs(title = "", subtitle = "Rare species", caption = "") +
+  stat_compare_means(method = "wilcox.test", size = 4.5, label = "p.format",
+                     family = "Helvetica", label.x.npc = "left") 
+
+
+
+SA_rare_load <-
+  ggerrorplot(spatial_metaData, 
+            x = "SA_category", y = "rare_bacterialBurden",
+            main = "", xlab = "", ylab = "Bacterial load",
+            desc_stat = "median", 
+            ggtheme = theme_pubr(base_size = 14, 
+                                 base_family = "Helvetica",
+                                 border = TRUE),
+            add = c("boxplot", "point"), 
+            add.params = list(color = "black")) +
+  ylim(0,25000) +
+  labs(title = "", subtitle = "Rare species", caption = "") +
+  stat_compare_means(method = "wilcox.test", size = 4.5, label = "p.format",
+                     family = "Helvetica", label.x.npc = "left")
+
+
+
+# Calculate percentage of children with and without Pseudomonas per age group
+healthy_SA_2 <- healthy_PA
+healthy_SA_2$ageGroup <- str_replace(healthy_SA_2$ageGroup, "0-3 months", "0-3 years")
+healthy_SA_2$ageGroup <- str_replace(healthy_SA_2$ageGroup, "4-11 months", "0-3 years")
+healthy_SA_2$ageGroup <- str_replace(healthy_SA_2$ageGroup, "1-3 years", "0-3 years")
+
+prop_healthy_SA <- table(healthy_SA_2$ageGroup, healthy_SA_2$SA_category)
+prop_healthy_SA <- data.frame(prop_healthy_SA)
+prop_healthy_SA$Perc <- c(37, 15, 37, 15)
+prop_healthy_SA$Result <- prop_healthy_SA$Freq / prop_healthy_SA$Perc * 100
+prop_healthy_SA$state <- "Healthy"
+
+
+diseased_SA_2 <- diseased_PA
+diseased_SA_2$ageGroup <- str_replace(diseased_SA_2$ageGroup, "0-3 months", "0-3 years")
+diseased_SA_2$ageGroup <- str_replace(diseased_SA_2$ageGroup, "4-11 months", "0-3 years")
+diseased_SA_2$ageGroup <- str_replace(diseased_SA_2$ageGroup, "1-3 years", "0-3 years")
+
+prop_diseased_SA <- table(diseased_SA_2$ageGroup, diseased_SA_2$SA_category)
+prop_diseased_SA <- data.frame(prop_diseased_SA)
+prop_diseased_SA$Perc <- c(25, 16, 25, 16)
+prop_diseased_SA$Result <- prop_diseased_SA$Freq / prop_diseased_SA$Perc * 100
+prop_diseased_SA$state <- "CF"
+
+merged_prop_diseased_SA_healthy <- rbind(prop_healthy_SA, prop_diseased_SA)
+
+
+Sa <-
+  ggplot(merged_prop_diseased_SA_healthy, 
+       aes(x=Var1, y=Result, fill=Var2)) +
+  geom_bar(position="stack", stat="identity", color="black", width=0.9) +
+  facet_wrap(~ state) +
+  xlab("") +
+  ylab("Proportion of patients (in %)") +
+  scale_fill_manual(expression(italic("S. aureus")), 
+                    values = c("absent" = "grey60", 
+                               "present" = "black")) + 
+  theme_pubr(base_size = 14, 
+             base_family = "Helvetica",
+             border = TRUE) +
+  theme(axis.text.x = element_text(angle=0),
+        strip.text = element_text(size=14),
+        legend.text = element_text(size = 12)) +
+  coord_flip()
+
+
+staphA <-
+  ggarrange(Sa, labels = "a",
+           ggarrange(SA_abundant_diversity, SA_abundant_load,
+                     SA_rare_diversity, SA_rare_load, nrow = 1, ncol = 4,
+                     heights = c(2,2),
+                     labels = c("b", "c", "d", "e")),
+           ncol = 1, heights = c(2,4))
+staphA
+
+
+#ggsave("SupplementaryFigure5.tiff", 
+ #      plot = staphA,
+  #     width = 11.7,
+   #    height = 8.74,
+    #   scale = 1,
+     #  dpi = 1200)
+#dev.off()
+
+
+wilcox.test(spatial_metaData$abundant_bacterialBurden ~ spatial_metaData$SA_category)
+wilcoxonR(x = spatial_metaData$abundant_bacterialBurden,
+          g = spatial_metaData$SA_category,
+          ci = TRUE)
+
+wilcox.test(spatial_metaData$abundant_shannon ~ spatial_metaData$SA_category)
+wilcoxonR(x = spatial_metaData$abundant_shannon,
+          g = spatial_metaData$SA_category,
+          ci = TRUE)
+
+wilcox.test(spatial_metaData$rare_shannon ~ spatial_metaData$SA_category)
+wilcoxonR(x = spatial_metaData$rare_shannon,
+          g = spatial_metaData$SA_category,
+          ci = TRUE)
+
+wilcox.test(spatial_metaData$rare_bacterialBurden ~ spatial_metaData$SA_category)
+wilcoxonR(x = spatial_metaData$rare_bacterialBurden,
+          g = spatial_metaData$SA_category,
+          ci = TRUE)
+
+```
+
+
+```{r}
+# Further information of P. aeruginosa occurence for supplementary materials
+# Chi-squared: no significant difference between PA presence/absence and disease state
+ctable(spatial_metaData$PA_category, spatial_metaData$state, chisq = TRUE)
+fisher.test(spatial_metaData$PA_category, spatial_metaData$state, conf.int = TRUE, conf.level = 0.95)
+
+spatial_metaData2 <- spatial_metaData
+spatial_metaData2$ageGroup <- 
+  str_replace(spatial_metaData2$ageGroup, "4-11 months", "0 years")
+spatial_metaData2$ageGroup <- 
+  str_replace(spatial_metaData2$ageGroup, "0-3 months", "0 years")
+
+ctable(spatial_metaData2$PA_category, spatial_metaData2$ageGroup, chisq = TRUE)
+fisher.test(spatial_metaData2$PA_category, spatial_metaData2$ageGroup, conf.int = TRUE, conf.level = 0.95)
+
+ctable(spatial_metaData$PA_category, spatial_metaData$SampleYear, chisq = TRUE)
+fisher.test(spatial_metaData$PA_category, spatial_metaData$SampleYear)
+
+
+# Plot state
+PA_cat2 <- c("present", "absent", "present", "absent")
+PA_state <- c("CF", "CF", "Healthy", "Healthy")
+# Create the dataframe
+df2 <- cbind(PA_cat2, PA_state)
+df2 <- data.frame(df2)
+df2$value <- c(7,35,11,41)
+df2$Perc <- c(17,83,21,79)
+# plot the graph
+g1 <- ggplot(df2, aes(PA_cat2, PA_state)) + 
+  geom_point(aes(size = Perc), colour = "black", alpha = 0.4) + 
+  theme_pubr(base_size = 12, base_family = "Helvetica") + 
+  xlab("") + ylab("") +
+  scale_size(range = c(5, 30),
+                        limits = c(0,100),
+             breaks = c(12, 13, 19, 21, 22, 25, 29, 33, 67, 71, 75, 78, 79, 81, 87, 88, 97)) +
+  geom_text(aes(label = Perc), family = "Helvetica") +
+  ggtitle("p-value = 0.34") +
+  theme(axis.text.y = element_text(colour = "black", size = 12), 
+    axis.text.x = element_text(colour = "black", size = 12), 
+    legend.position = "none", 
+    axis.title.y = element_text(size = 12), 
+    axis.title.x = element_text(size = 12, colour = "black"), 
+    panel.background = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA, size = 1.0))
+
+
+# Plot age group
+PA_cat <- c("present", "absent", 
+            "present", "absent", 
+            "present", "absent")
+PA_age <- c("0 years", "0 years", 
+              "1-3 years", "1-3 years", 
+            "4-6 years", "4-6 years")
+
+# Create the data frame
+df1 <- cbind(PA_cat, PA_age)
+df1 <- data.frame(df1)
+df1$PA_age <- factor(df1$PA_age,
+                    levels = c("0 years",
+                               "1-3 years", 
+                               "4-6 years"))
+df1$value <- c(7,27,3,26,8,23)
+df1$Perc <- c(21,79,10,90,24,76)
+# plot the graph
+g2 <- ggplot(df1, aes(PA_cat, PA_age)) + 
+  geom_point(aes(size = Perc), colour = "black", alpha = 0.4) + 
+  theme_pubr(base_size = 12, base_family = "Helvetica") + 
+  xlab("") + ylab("") +
+  scale_size_continuous(range = c(5, 30),
+                        limits = c(0, 100),
+             breaks = c(12, 13, 19, 21, 22, 25, 29, 33, 67, 71, 75, 78, 79, 81, 87, 88, 97)) +
+  geom_text(aes(label = Perc), family = "Helvetica") +
+  ggtitle("p-value = 0.5") +
+  theme(axis.text.y = element_text(colour = "black", size = 12), 
+    axis.text.x = element_text(colour = "black", size = 12), 
+    legend.position = "none", 
+    axis.title.y = element_text(size = 12), 
+    axis.title.x = element_text(size = 12, colour = "black"), 
+    panel.background = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA, size = 1.0))
+
+
+# Plot season
+PA_season <- c("autumn", "autumn", "spring", "spring", "summer", "summer", "winter", "winter")
+PA_cat3 <- c("present", "absent","present", "absent","present", "absent","present", "absent")
+df3 <- cbind(PA_cat3, PA_season)
+df3 <- data.frame(df3)
+df3$PA_season <- factor(df3$PA_season,
+                        levels = c("spring", "summer", "autumn", "winter"))
+df3$value <- c(5,10,3,28,9,28,1,10)
+df3$Perc <- c(33,67,10,90,24,76,9,91)
+# plot the graph
+g3 <- ggplot(df3, aes(PA_cat3, PA_season)) + 
+  geom_point(aes(size = Perc), colour = "black", alpha = 0.4) + 
+  theme_pubr(base_size = 12, base_family = "Helvetica") + 
+  xlab("") + ylab("") +
+  scale_size(range = c(5, 30),
+             limits = c(0,100),
+             breaks = c(12, 13, 19, 21, 22, 25, 29, 33, 67, 71, 75, 78, 79, 81, 87, 88, 97)) +
+  geom_text(aes(label = Perc), family = "Helvetica") +
+  ggtitle("p-value = 0.11") +
+  theme(axis.text.y = element_text(colour = "black", size = 12), 
+    axis.text.x = element_text(colour = "black", size = 12), 
+    legend.position = "none", 
+    axis.title.y = element_text(size = 12), 
+    axis.title.x = element_text(size = 12, colour = "black"), 
+    panel.background = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA, size = 1.0))
+
+PA_variables <- grid.arrange(g1,g2,g3, nrow =1, widths=c(2.3, 2.6, 2.3))
+
+
+
+#ggsave("PA_variables.tiff", 
+ #      plot = PA_variables,
+  #     width = 8.8,
+   #    height = 5.0,
+    #   device = "tiff",
+     #  scale = 1,
+      # dpi = 1200)
+#dev.off()
+
+```
+
+
+# Diversity change with age ###
+```{r}
+
+spatial_metaData2$ageGroup2 <- spatial_metaData2$ageGroup
+
+ageAbundantState1 <-
+ggplot(spatial_metaData2, aes(x=ageGroup2, y=abundant_shannon, fill=state)) +
+  geom_boxplot(position=position_dodge(1)) +
+  geom_point(position=position_dodge(1)) +
+  ylab("Shannon diversity index\n") +
+  xlab("Age (in years)") +
+  scale_y_continuous(limits = c(0,6), breaks = c(0,2.5,5)) +
+  scale_x_discrete(breaks=c("0 years", "1-3 years", "4-6 years"),
+                   labels = c("0", "1-3", "4-6")) +
+  scale_fill_manual(values = c("#C0C0C0", "white")) +
+  stat_compare_means(method = "wilcox.test", size = 6, 
+                     label.sep = "\n", label = c("p.signif"), 
+                     label.y = 5.5, family = "Helvetica") +
+  theme_pubr(base_size = 14, 
+             base_family = "Helvetica",
+             border = TRUE) +
+  ggtitle("Core species") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 14, 
+                                   family = "Helvetica", 
+                                   angle = 0, hjust = 0.5),
+        text = element_text(size=14, family = "Helvetica"))
+
+
+
+ageRareState1 <-
+ggplot(spatial_metaData2, aes(x=ageGroup2, y=rare_shannon, fill=state)) +
+  geom_boxplot(position=position_dodge(1)) +
+  geom_point(position=position_dodge(1)) +
+  ylab(" ") +
+  xlab("Age (in years)") +
+  scale_y_continuous(limits = c(0,6), breaks = c(0,2.5,5)) +
+  scale_x_discrete(breaks=c("0 years", "1-3 years", "4-6 years"),
+                   labels = c("0", "1-3", "4-6")) +
+  scale_fill_manual(values = c("#C0C0C0", "white")) +
+  stat_compare_means(method = "wilcox.test", size = 6, 
+                     label.sep = "\n", label = c("p.signif"), 
+                     label.y = 5.5, family = "Helvetica") +
+  theme_pubr(base_size = 14, base_family = "Helvetica") +
+  ggtitle("Rare species") +
+  theme(legend.position = "none",
+        text = element_text(size=14, family = "Helvetica"),
+        axis.text.x = element_text(size = 14, family = "Helvetica", 
+                                   angle = 0, hjust = 0.5),
+        panel.border = element_rect(colour = "black", fill = NA))
+
+
+diversityCompare <-
+  grid.arrange(ageAbundantState1, 
+               ageRareState1, nrow = 1)
+
+
+#ggsave("SupplementaryFigure03.tiff", 
+ #      plot = diversityCompare,
+  #     device = "tiff",
+   #    scale = 1,
+    #   height = 7.72,
+     #  width =  9.35,
+      # dpi = 1200)
+#dev.off()
+```
+
+
+```{r}
+# calculate corresponding effect sizes of diversity with age
+# A common effect size statistic for the Mann–Whitney test is r, 
+# which is the Z value from the test divided by the total number of observations.  
+# See https://rcompanion.org/handbook/F_04.html
+
+# Shannon diversity age-variation (Healthy)
+healthy_PA_2$ageGroup <- as.factor(healthy_PA_2$ageGroup)
+kruskal.test(healthy_PA_2$abundant_shannon ~ healthy_PA_2$ageGroup)
+conover.test(healthy_PA_2$abundant_shannon, 
+             g=healthy_PA_2$ageGroup, 
+             method="bh", kw=FALSE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+epsilonSquared(healthy_PA_2$abundant_shannon, 
+               healthy_PA_2$ageGroup, ci = TRUE)
+
+
+# Shannon diversity age-variation (CF)
+kruskal.test(abundant_shannon ~ as.factor(ageGroup), data=diseased_PA_2)
+conover.test(diseased_PA_2$abundant_shannon, 
+             g=diseased_PA_2$ageGroup, 
+             method="bh", kw=FALSE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+epsilonSquared(diseased_PA_2$abundant_shannon, 
+               diseased_PA_2$ageGroup, ci = TRUE)
+
+
+# Compare diversity of healthy and CF across age
+# start with infants (first year of life)
+metaData_0years <- subset(spatial_metaData2, 
+                          ageGroup2 == "0 years")
+# Core species (Shannon diversity)
+wilcoxonR(x = metaData_0years$abundant_shannon,
+          g = metaData_0years$state,
+          ci = TRUE)
+# Core species (bacterial load)
+#wilcoxonR(x = metaData_0years$abundant_bacterialBurden,
+ #         g = metaData_0years$state,
+  #        ci = TRUE)
+
+# Children (1-3 years of age)
+metaData_1_3years <- subset(spatial_metaData2, ageGroup == "1-3 years")
+# Core species (Shannon diversity)
+wilcoxonR(x = metaData_1_3years$abundant_shannon,
+          g = metaData_1_3years$state,
+          ci = TRUE)
+# Rare species (Shannon diversity)
+metaData_1_3years <- subset(spatial_metaData2, ageGroup == "1-3 years")
+wilcoxonR(x = metaData_1_3years$rare_shannon,
+          g = metaData_1_3years$state,
+          ci = TRUE)
+
+
+
+# Children (4-6 years of age)
+metaData_4_6years <- subset(spatial_metaData2, ageGroup == "4-6 years")
+# Core species (Shannon diversity)
+wilcoxonR(x = metaData_4_6years$abundant_shannon,
+          g = metaData_4_6years$state,
+          ci = TRUE)
+wilcox.test(abundant_shannon ~ state, metaData_4_6years)
+
+
+# Core species (bacterial load)
+wilcoxonR(x = metaData_4_6years$abundant_bacterialBurden,
+          g = metaData_4_6years$state,
+          ci = TRUE)
+
+```
+
+# Age and gender distribution CF vs Healthy
+```{r}
+# Compare age distributions 
+boxplot(spatial_metaData2$Age_in_months ~ spatial_metaData2$state)
+wilcox.test(spatial_metaData2$Age_in_months ~ spatial_metaData2$state)
+wilcoxonR(x = spatial_metaData2$Age_in_months,
+          g = spatial_metaData2$state,
+          ci = TRUE)
+# not significantly different
+
+
+# Gender distribution ####
+metaData_gender <- metaData[- grep("NA", metaData$Gender),]
+metaData_gender$Gender <- str_replace(metaData_gender$Gender, "w", "f") 
+ctable(metaData_gender$Gender, metaData_gender$state, chisq = TRUE)
+fisher.test(metaData_gender$Gender, metaData_gender$state, conf.int = TRUE, conf.level = 0.95)
+
+
+metaDataCF <- subset(metaData, state == "CF")
+AgeCFcohort <- metaDataCF$Age_in_months
+median(AgeCFcohort)
+sd(AgeCFcohort)*(sqrt((length(AgeCFcohort)-1)/length(AgeCFcohort)))
+min(AgeCFcohort)
+max(AgeCFcohort)
+mad(AgeCFcohort)
+# 25.2
+
+metaDataH <- subset(metaData, state == "Healthy")
+AgeHcohort <- metaDataH$Age_in_months
+median(AgeHcohort)
+sd(AgeHcohort)
+sd(AgeHcohort)*(sqrt((length(AgeHcohort)-1)/length(AgeHcohort)))
+min(AgeHcohort)
+max(AgeHcohort)
+mad(AgeHcohort)
+# 11.9
+
+```
+
+
+
+# Taxonomic investigation (bubble plot)
+```{r}
+
+# Rename core species table
+all_bubble <- data.frame(spatial_coreSpecies)
+#all_bubble <- data.frame(longitudinal_coreSpecies)
+# add age group and state
+all_bubble$AgeGroup <- spatial_metaData2$ageGroup
+#all_bubble$AgeGroup <- metaData$ageGroup
+
+all_bubble$state <- spatial_metaData2$state
+#all_bubble$state <- metaData$state
+patient1 <- "MCF13s1"
+all_bubble <- all_bubble[!rownames(all_bubble) %in% patient1,]
+# Extract CF children
+all_bubble_CF <- subset(all_bubble, state == "CF")
+# Obtain the median value across all species and age group
+all_bubble_CF <- 
+  ddply(all_bubble_CF,"AgeGroup", numcolwise(median))
+# add Column with state information
+all_bubble_CF$state <- "CF"
+
+# Extract Healthy children
+all_bubble_H <- subset(all_bubble, state == "Healthy")
+# Obtain the median value across all species and age group
+all_bubble_H <- 
+  ddply(all_bubble_H,"AgeGroup", numcolwise(median))
+# add column with state information
+all_bubble_H$state <- "Healthy"
+
+# merge both data frames
+all_bubble_merged <- rbind(all_bubble_H,
+                           all_bubble_CF)
+# store state and age in variables outside the data frame
+state_all_bubble <- all_bubble_merged$state
+age_all_bubble <- all_bubble_merged$AgeGroup
+
+# sum row values
+all_bubble_merged$rowSums <- rowSums(all_bubble_merged[,2:30])
+medianLoad <- all_bubble_merged$rowSums
+
+# convert absolute abundance to relative abundance
+all_bubble_merged <- 
+  round(all_bubble_merged[,2:30] / all_bubble_merged$rowSums * 100, 2)
+
+#all_bubble_merged$MedianLoad <- medianLoad
+all_bubble_merged$state <- state_all_bubble
+all_bubble_merged$AgeGroup <- age_all_bubble
+all_bubble_merged$n <- c("n = 28","n = 9","n = 15",
+                         "n = 5","n = 20","n = 16")
+
+# convert to long format
+all_bubble_L <- gather(all_bubble_merged, key=species, value=abundance,
+                       colnames(all_bubble_merged[,1:29]))
+# replace dot between species names (Streptococcus.salivarius) with space
+all_bubble_L$species <- 
+  gsub(x = all_bubble_L$species, pattern = "\\.", replacement = " ") 
+
+
+relative_plot <-
+  ggplot(all_bubble_L, 
+       aes(x=AgeGroup, y=abundance, fill=species, group=species)) +
+  geom_bar(position="stack", stat="identity", color="white", width=0.8) +
+  facet_wrap(~ state) +
+  xlab("Age (in years)") +
+  ylab("Median relative abundance (in %)") +
+  scale_fill_manual(values= c("Streptococcus thermophilus" = "dodgerblue4",
+                              "Streptococcus sanguinis" = "dodgerblue4",
+                              "Streptococcus salivarius" = "dodgerblue4",
+                               "Streptococcus pseudopneumoniae" = "dodgerblue4",
+                                "Streptococcus pneumoniae" = "dodgerblue4",
+                               "Streptococcus parasanguinis" = "dodgerblue4",
+                               "Streptococcus oralis" = "dodgerblue4",
+                               "Streptococcus mitis" = "dodgerblue4",
+                               "Streptococcus equinus" = "dodgerblue4",
+                               "Veillonella parvula" = "forestgreen", 
+                               "Veillonella atypica" = "forestgreen",
+                               "Rothia mucilaginosa" = "black",
+                               "Rothia aeria" = "black",
+                               "Prevotella melaninogenica" = "deeppink4",
+                               "Prevotella jejuni" = "deeppink4",
+                               "Neisseria mucosa" = "khaki1",
+                               "Neisseria meningitidis"  = "khaki1",
+                               "Neisseria lactamica" = "khaki1",
+                               "Neisseria gonorrhoeae" = "khaki1",
+                               "Haemophilus parainfluenzae" = "firebrick2",
+                               "Haemophilus influenzae" = "firebrick2",
+                               "Fusobacterium periodonticum" = "orange",
+                               "Eubacterium sulci" = "green",
+                               "Corynebacterium argentoratense" = "blue",
+                               "Capnocytophaga leadbetteri" = "blue",
+                               "Capnocytophaga gingivalis" = "blue",
+                               "Campylobacter concisus" = "grey",
+                               "Atopobium parvulum" = "grey20",
+                               "Actinomyces meyeri" = "cyan2")) +
+  theme_pubr(base_size = 14, base_family = "Helvetica", legend = "right", border = TRUE) +
+  theme(axis.text.x = element_text(size = 14, family = "Helvetica", 
+                                   angle = 0, hjust = 0.5, vjust = 1),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14, face = "italic"),
+        legend.title = element_blank(),
+        strip.text = element_text(size = 14, family = "Helvetica")) +
+  scale_x_discrete(breaks=c("0 years", "1-3 years", "4-6 years"),
+                   labels=c("0", "1-3", "4-6")) +
+  guides(fill=guide_legend(ncol = 1)) +
+  geom_text(aes(y=102, label = n), 
+            hjust = 0.5,
+            vjust=0,
+            #family="Helvetica",
+            size = 4) 
+
+relative_plot
+
+#ggsave(file="Figure01_Nov2020_NPJ.pdf",
+ #      dpi=1200,
+  #     plot = relative_plot,
+   #    scale = 1,
+    #   height = 8.7,
+     #  width =  8.29)
+#dev.off()
+
+```
+
+
+```{r}
+# Statistical differences (relative abundance)
+all_bubble$sumsRow <- rowSums(all_bubble[,1:29])
+all_bubble_rel <-  round(all_bubble[,1:29] / all_bubble$sumsRow * 100, 2)
+all_bubble_rel$ageGroup <- all_bubble$AgeGroup
+all_bubble_rel$state <- all_bubble$state
+
+ab1 <- subset(all_bubble_rel, ageGroup == "0 years")
+ab1H <- subset(ab1, state == "Healthy")
+ab1CF <- subset(ab1, state == "CF")
+
+ab2 <- subset(all_bubble_rel, ageGroup == "1-3 years")
+ab2H <- subset(ab2, state == "Healthy")
+ab2CF <- subset(ab2, state == "CF")
+
+ab3 <- subset(all_bubble_rel, ageGroup == "4-6 years")
+ab3H <- subset(ab3, state == "Healthy")
+ab3CF <- subset(ab3, state == "CF")
+
+ab3 <- subset(all_bubble_rel, ageGroup == "4-6 years")
+
+ab1$ageGroup <- NULL
+ab1_state <- ab1$state
+ab1_state <- str_replace_all(ab1_state, "Healthy", "0")
+ab1_state <- str_replace_all(ab1_state, "CF", "1")
+ab1_state <- as.numeric(as.character(ab1_state))
+ab1$state <- NULL
+
+
+#WT_VP_0 <- wilcox.test(ab1$Veillonella.parvula ~ ab1_state)
+#WR_VP_0 <- wilcoxonR(x = ab1$Veillonella.parvula, g = ab1_state, ci = TRUE)
+#Padjust_VP_0 <- p.adjust(WT_VP_0$p.value, method="BH")
+#WT_VA_0 <- wilcox.test(ab1$Veillonella.atypica ~ ab1_state)
+#WR_VA_0 <- wilcoxonR(x = ab1$Veillonella.atypica, g = ab1_state, ci = TRUE)
+#Padjust_VA_0 <- p.adjust(WT_VA_0$p.value, method="BH")
+
+#WT_SSang_0 <- wilcox.test(ab1$Streptococcus.sanguinis ~ ab1_state)
+#WR_SSang_0 <- wilcoxonR(x = ab1$Streptococcus.sanguinis, g = ab1_state, ci = TRUE)
+#Padjust_SSang_0 <- p.adjust(WT_SSang_0$p.value, method="BH")
+
+#WT_SSal_0 <- wilcox.test(ab1$Streptococcus.salivarius ~ ab1_state)
+#WR_SSal_0 <- wilcoxonR(x = ab1$Streptococcus.salivarius, g = ab1_state, ci = TRUE)
+#Padjust_SSal_0 <- p.adjust(WT_SSal_0$p.value, method="BH")
+#
+#WT_SPseu_0 <- wilcox.test(ab1$Streptococcus.pseudopneumoniae ~ ab1_state)
+#WR_SPseu_0 <- wilcoxonR(x = ab1$Streptococcus.pseudopneumoniae, g = ab1_state, ci = TRUE)
+#Padjust_SPseu_0 <- p.adjust(WT_SPseu_0$p.value, method="BH")
+
+#WT_SPneu_0 <- wilcox.test(ab1$Streptococcus.pneumoniae ~ ab1_state)
+#WR_SPneu_0 <- wilcoxonR(x = ab1$Streptococcus.pneumoniae, g = ab1_state, ci = TRUE)
+#Padjust_SPneu_0 <- p.adjust(WT_SPneu_0$p.value, method="BH")
+
+#WT_SPara_0 <- wilcox.test(ab1$Streptococcus.parasanguinis ~ ab1_state)
+#WR_SPara_0 <- wilcoxonR(x = ab1$Streptococcus.parasanguinis, g = ab1_state, ci = TRUE)
+# <- p.adjust(WT_SPara_0$p.value, method="BH")
+
+#WT_SOra_0 <- wilcox.test(ab1$Streptococcus.oralis ~ ab1_state)
+#WR_SOra_0 <- wilcoxonR(x = ab1$Streptococcus.oralis, g = ab1_state, ci = TRUE)
+#Padjust_SOra_0 <- p.adjust(WT_SOra_0$p.value, method="BH")
+
+#WT_Smit_0 <- wilcox.test(ab1$Streptococcus.mitis ~ ab1_state)
+#WR_Smit_0 <- wilcoxonR(x = ab1$Streptococcus.mitis, g = ab1_state, ci = TRUE)
+#Padjust_Smit_0 <- p.adjust(WT_Smit_0$p.value, method="BH")
+#WT_Sequi_0 <- wilcox.test(ab1$Streptococcus.equinus ~ ab1_state)
+#WR_Sequi_0 <- wilcoxonR(x = ab1$Streptococcus.equinus, g = ab1_state, ci = TRUE)
+#Padjust_Sequi_0 <- p.adjust(WT_Sequi_0$p.value, method="BH")
+#WT_Sthermo_0 <- wilcox.test(ab1$Streptococcus.thermophilus ~ ab1_state)
+#WR_Sthermo_0 <- wilcoxonR(x = ab1$Streptococcus.thermophilus, g = ab1_state, ci = TRUE)
+#Padjust_Sthermo_0 <- p.adjust(WT_Sthermo_0$p.value, method="BH")
+
+#WT_RM_0 <- wilcox.test(ab1$Rothia.mucilaginosa ~ ab1_state)
+#WR_RM_0 <- wilcoxonR(x = ab1$Rothia.mucilaginosa, g = ab1_state, ci = TRUE)
+#Padjust_RM_0 <- p.adjust(WT_RM_0$p.value, method="BH")
+#WT_RA_0 <- wilcox.test(ab1$Rothia.aeria ~ ab1_state)
+#WR_RA_0 <- wilcoxonR(x = ab1$Rothia.aeria, g = ab1_state, ci = TRUE)
+#Padjust_RA_0 <- p.adjust(WT_RA_0$p.value, method="BH")
+#WT_PM_0 <- wilcox.test(ab1$Prevotella.melaninogenica ~ ab1_state)
+#WR_PM_0 <- wilcoxonR(x = ab1$Prevotella.melaninogenica, g = ab1_state, ci = TRUE)
+#Padjust_PM_0 <- p.adjust(WT_PM_0$p.value, method="BH")
+#WT_PJ_0 <- wilcox.test(ab1$Prevotella.jejuni ~ ab1_state)
+#WR_PJ_0 <- wilcoxonR(x = ab1$Prevotella.jejuni, g = ab1_state, ci = TRUE)
+#Padjust_PJ_0 <- p.adjust(WT_PJ_0$p.value, method="BH")
+#WT_Nmuc_0 <- wilcox.test(ab1$Neisseria.mucosa ~ ab1_state)
+#WR_Nmuc_0 <- wilcoxonR(x = ab1$Neisseria.mucosa, g = ab1_state, ci = TRUE)
+#Padjust_Nmuc_0 <- p.adjust(WT_Nmuc_0$p.value, method="BH")
+#WT_Nmeng_0 <- wilcox.test(ab1$Neisseria.meningitidis ~ ab1_state)
+#WR_Nmeng_0 <- wilcoxonR(x = ab1$Neisseria.meningitidis, g = ab1_state, ci = TRUE)
+#Padjust_Nmeng_0 <- p.adjust(WT_Nmeng_0$p.value, method="BH")
+#WT_Nlac_0 <- wilcox.test(ab1$Neisseria.lactamica ~ ab1_state)
+#WR_Nlac_0 <- wilcoxonR(x = ab1$Neisseria.lactamica, g = ab1_state, ci = TRUE)
+#Padjust_Nlac_0 <- p.adjust(WR_Nlac_0$p.value, method="BH")
+#WT_Ngon_0 <- wilcox.test(ab1$Neisseria.gonorrhoeae ~ ab1_state)
+#WR_Ngon_0 <- wilcoxonR(x = ab1$Neisseria.gonorrhoeae, g = ab1_state, ci = TRUE)
+#Padjust_Ngon_0 <- p.adjust(WT_Ngon_0$p.value, method="BH")
+
+#WT_HP_0 <- wilcox.test(ab1$Haemophilus.parainfluenzae ~ ab1_state)
+#WR_HP_0 <- wilcoxonR(x = ab1$Haemophilus.parainfluenzae, g = ab1_state, ci = TRUE)
+#Padjust_HP_0 <- p.adjust(WT_HP_0$p.value, method="BH")
+#WT_HI_0 <- wilcox.test(ab1$Haemophilus.influenzae ~ ab1_state)
+#WR_HI_0 <- wilcoxonR(x = ab1$Haemophilus.influenzae, g = ab1_state, ci = TRUE)
+#Padjust_HI_0 <- p.adjust(WT_HI_0$p.value, method="BH")
+
+#WT_FP_0 <- wilcox.test(ab1$Fusobacterium.periodonticum ~ ab1_state)
+#WR_FP_0 <- wilcoxonR(x = ab1$Fusobacterium.periodonticum, g = ab1_state, ci = TRUE)
+#Padjust_FP_0 <- p.adjust(WT_FP_0$p.value, method="BH")
+#WT_ES_0 <- wilcox.test(ab1$Eubacterium.sulci ~ ab1_state)
+#WR_ES_0 <- wilcoxonR(x = ab1$Eubacterium.sulci, g = ab1_state, ci = TRUE)
+#Padjust_ES_0 <- p.adjust(WT_ES_0$p.value, method="BH")
+
+#WT_CA_0 <- wilcox.test(ab1$Corynebacterium.argentoratense ~ ab1_state)
+#WR_CA_0 <- wilcoxonR(x = ab1$Corynebacterium.argentoratense, g = ab1_state, ci = TRUE)
+#Padjust_CA_0 <- p.adjust(WT_CA_0$p.value, method="BH")
+#WT_CL_0 <- wilcox.test(ab1$Capnocytophaga.leadbetteri ~ ab1_state)
+#WR_CL_0 <- wilcoxonR(x = ab1$Capnocytophaga.leadbetteri, g = ab1_state, ci = TRUE)
+#Padjust_CL_0 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_CG_0 <- wilcox.test(ab1$Capnocytophaga.gingivalis ~ ab1_state)
+#WR_CG_0 <- wilcoxonR(x = ab1$Capnocytophaga.gingivalis, g = ab1_state, ci = TRUE)
+#Padjust_CG_0 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_CC_0 <- wilcox.test(ab1$Campylobacter.concisus ~ ab1_state)
+#WR_CC_0 <- wilcoxonR(x = ab1$Campylobacter.concisus, g = ab1_state, ci = TRUE)
+#Padjust_CC_0 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_AP_0 <- wilcox.test(ab1$Atopobium.parvulum ~ ab1_state)
+#WR_AP_0 <- wilcoxonR(x = ab1$Atopobium.parvulum, g = ab1_state, ci = TRUE)
+#Padjust_AP_0 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_AM_0 <- wilcox.test(ab1$Actinomyces.meyeri ~ ab1_state)
+#WR_AM_0 <- wilcoxonR(x = ab1$Actinomyces.meyeri, g = ab1_state, ci = TRUE)
+#Padjust_AM_0 <- p.adjust(WT_SSang_0$p.value, method="BH")
+
+
+#species <-
+ # c("Veillonella.parvula", "Veillonella.atypica", 
+  #  "Streptococcus.thermophilus", "Streptococcus.sanguinis", "Streptococcus.salivarius",
+   # "Streptococcus.pseudopneumoniae", "Streptococcus.pneuomoniae", "Streptococcus.parasanguinis", 
+  #  "Streptococcus.oralis", "Streptococcus.mitis", "Streptococcus.equinus",
+   # "Rothia.mucilaginosa", "Rothia.aeria", "Prevotella.melaninogenica", "Prevotella.jejuni",
+  #  "Neisseria.mucosa", "Neisseria.meningitidis", "Neisseria.lactamica", "Neisseria.gonorrhoeae",
+#    "Haemophilus.parainfluenzae", "Haemophilus.influenzae", "Fusobacterium.periodonticum",
+ #   "Eubacterium.sulci", "Corynebacterium.argentoratense", "Capnocytophaga.leadbetteri",
+  #  "Capnocytophaga.gingivalis", "Campylobacter.concisus", "Atopobium.parvulum", #"Actinomyces.meyeri")
+
+#wilcoxonP_0 <- c(WT_VP_0$statistic, WT_VA_0$statistic, WT_Sthermo_0$statistic, 
+ #                WT_SSang_0$statistic, WT_SSal_0$statistic,
+  #        WT_SPseu_0$statistic, WT_SPneu_0$statistic, WT_SPara_0$statistic,
+   #       WT_SOra_0$statistic, WT_Smit_0$statistic, WT_Sequi_0$statistic,
+    #      WT_RM_0$statistic, WT_RA_0$statistic, WT_PM_0$statistic, WT_PJ_0$statistic,
+     #     WT_Nmuc_0$statistic, WT_Nmeng_0$statistic, WT_Nlac_0$statistic, WT_Ngon_0$statistic,
+      #    WT_HP_0$statistic, WT_HI_0$statistic, WT_FP_0$statistic,
+       #   WT_ES_0$statistic, WT_CA_0$statistic, WT_CL_0$statistic,
+        #  WT_CG_0$statistic, WT_CC_0$statistic, WT_AP_0$statistic, WT_AM_0$statistic)
+  
+
+#wilcoxonPp_0 <- c(WT_VP_0$p.value, WT_VA_0$p.value, WT_Sthermo_0$p.value,
+ #                 WT_SSang_0$p.value, WT_SSal_0$p.value,
+  #        WT_SPseu_0$p.value, WT_SPneu_0$p.value, WT_SPara_0$p.value,
+   ##       WT_SOra_0$p.value, WT_Smit_0$p.value, WT_Sequi_0$p.value,
+     #     WT_RM_0$p.value, WT_RA_0$p.value, WT_PM_0$p.value, WT_PJ_0$p.value,
+      #    WT_Nmuc_0$p.value, WT_Nmeng_0$p.value, WT_Nlac_0$p.value, WT_Ngon_0$p.value,
+       #   WT_HP_0$p.value, WT_HI_0$p.value, WT_FP_0$p.value,
+        #  WT_ES_0$p.value, WT_CA_0$p.value, WT_CL_0$p.value,
+         # WT_CG_0$p.value, WT_CC_0$p.value, WT_AP_0$p.value, WT_AM_0$p.value)
+
+#adjP_0 <- c(Padjust_VP_0, Padjust_VA_0, Padjust_SSang_0, Padjust_SSal_0,
+ #         Padjust_SPseu_0, Padjust_SPneu_0, Padjust_SPara_0,
+  #        Padjust_SOra_0, Padjust_Smit_0, Padjust_Sequi_0,
+   #       Padjust_RM_0, Padjust_RA_0, Padjust_PM_0, Padjust_PJ_0,
+    #      Padjust_Nmuc_0, Padjust_Nmeng_0, Padjust_Nlac_0, Padjust_Ngon_0,
+     #     Padjust_HP_0, Padjust_HI_0,Padjust_FP_0,
+      #    Padjust_ES_0, Padjust_CA_0,Padjust_CL_0,
+       #   Padjust_CG_0, Padjust_CC_0, Padjust_AP_0, Padjust_AM_0)
+
+#E2_0 <- c(WR_VP_0$r, WR_VA_0$r, WR_Sthermo_0$r, WR_SSang_0$r, WR_SSal_0$r,
+ #         WR_SPseu_0$r, WR_SPneu_0$r, WR_SPara_0$r,
+  #        WR_SOra_0$r, WR_Smit_0$r, WR_Sequi_0$r,
+   #       WR_RM_0$r, WR_RA_0$r, WR_PM_0$r, WR_PJ_0$r,
+    #      WR_Nmuc_0$r, WR_Nmeng_0$r, WR_Nlac_0$r, WR_Ngon_0$r,
+     #     WR_HP_0$r, WR_HI_0$r, WR_FP_0$r,
+      #    WR_ES_0$r, WR_CA_0$r, WR_CL_0$r,
+       #   WR_CG_0$r, WR_CC_0$r, WR_AP_0$r, WR_AM_0$r)
+
+#E2_lower <- c(WR_VP_0$lower.ci, WR_VA_0$lower.ci, WR_Sthermo_0$lower.ci, WR_SSang_0$lower.ci, WR_SSal_0$lower.ci,
+ #         WR_SPseu_0$lower.ci, WR_SPneu_0$lower.ci, WR_SPara_0$lower.ci,
+  #        WR_SOra_0$lower.ci, WR_Smit_0$lower.ci, WR_Sequi_0$lower.ci,
+   #       WR_RM_0$lower.ci, WR_RA_0$lower.ci, WR_PM_0$lower.ci, WR_PJ_0$lower.ci,
+    #      WR_Nmuc_0$lower.ci, WR_Nmeng_0$lower.ci, WR_Nlac_0$lower.ci, WR_Ngon_0$lower.ci,
+     #     WR_HP_0$lower.ci, WR_HI_0$lower.ci, WR_FP_0$lower.ci,
+      #    WR_ES_0$lower.ci, WR_CA_0$lower.ci, WR_CL_0$lower.ci,
+       #   WR_CG_0$lower.ci, WR_CC_0$lower.ci, WR_AP_0$lower.ci, WR_AM_0$lower.ci)
+
+
+#E2_upper <- c(WR_VP_0$upper.ci, WR_VA_0$upper.ci, WR_Sthermo_0$upper.ci, WR_SSang_0$upper.ci, WR_SSal_0$upper.ci,
+ #         WR_SPseu_0$upper.ci, WR_SPneu_0$upper.ci, WR_SPara_0$upper.ci,
+  #        WR_SOra_0$upper.ci, WR_Smit_0$upper.ci, WR_Sequi_0$upper.ci,
+   #       WR_RM_0$upper.ci, WR_RA_0$upper.ci, WR_PM_0$upper.ci, WR_PJ_0$upper.ci,
+    #      WR_Nmuc_0$upper.ci, WR_Nmeng_0$upper.ci, WR_Nlac_0$upper.ci, WR_Ngon_0$upper.ci,
+     #     WR_HP_0$upper.ci, WR_HI_0$upper.ci, WR_FP_0$upper.ci,
+      #    WR_ES_0$upper.ci, WR_CA_0$upper.ci, WR_CL_0$upper.ci,
+       #   WR_CG_0$upper.ci, WR_CC_0$upper.ci, WR_AP_0$upper.ci, WR_AM_0$upper.ci)
+
+#relAbund_0_statistics <-
+ # data.frame(cbind(species,wilcoxonP_0, wilcoxonPp_0, E2_0, E2_lower, E2_upper))
+#relAbund_0_statistics$wilcoxonPp_0 <- as.numeric(as.character(relAbund_0_statistics$wilcoxonPp_0))
+#relAbund_0_statistics$wilcoxonPp_0 <- round(relAbund_0_statistics$wilcoxonPp_0, 5)
+#relAbund_0_statistics$E2_0 <- as.numeric(as.character(relAbund_0_statistics$E2_0))
+#relAbund_0_statistics$E2_0 <- round(relAbund_0_statistics$E2_0, 2)
+#relAbund_0_statistics$E2_lower <- as.numeric(as.character(relAbund_0_statistics$E2_lower))
+#relAbund_0_statistics$E2_lower <- round(relAbund_0_statistics$E2_lower, 2)
+#relAbund_0_statistics$E2_upper <- as.numeric(as.character(relAbund_0_statistics$E2_upper))
+#relAbund_0_statistics$E2_upper <- round(relAbund_0_statistics$E2_upper, 2)
+
+# rename columns
+#colnames(relAbund_0_statistics) <-
+ # c("Species", "statistic", "adjusted_p", "R2", "R2_CI_lower", "R2_CI_upper")
+
+#relAbund_0_statistics$diff <-
+ # ifelse(relAbund_0_statistics$adjusted_p < 0.01, "diff", "no_diff")
+
+
+#write.csv(relAbund_0_statistics, file="firstYear.csv")
+#saveRelAbundance <- t(all_bubble_merged)
+#saveRelAbundance <- data.frame(saveRelAbundance)
+#write.csv(saveRelAbundance, file="relAbundanceCoreSpecies.csv")
+
+
+#ab2$ageGroup <- NULL
+#ab2_state <- ab2$state
+#ab2_state <- str_replace_all(ab2_state, "Healthy", "0")
+#ab2_state <- str_replace_all(ab2_state, "CF", "1")
+#ab2_state <- as.numeric(as.character(ab2_state))
+#ab2$state <- NULL
+
+
+#WT_VP_1 <- wilcox.test(ab2$Veillonella.parvula ~ ab2_state)
+#WR_VP_1 <- wilcoxonR(x = ab2$Veillonella.parvula, g = ab2_state, ci = TRUE)
+#Padjust_VP_1 <- p.adjust(WT_VP_0$p.value, method="BH")
+#WT_VA_1 <- wilcox.test(ab2$Veillonella.atypica ~ ab2_state)
+#WR_VA_1 <- wilcoxonR(x = ab2$Veillonella.atypica, g = ab2_state, ci = TRUE)
+#Padjust_VA_1 <- p.adjust(WT_VA_0$p.value, method="BH")
+
+#WT_SSang_1 <- wilcox.test(ab2$Streptococcus.sanguinis ~ ab2_state)
+#WR_SSang_1 <- wilcoxonR(x = ab2$Streptococcus.sanguinis, g = ab2_state, ci = TRUE)
+#Padjust_SSang_1 <- p.adjust(WT_SSang_0$p.value, method="BH")
+
+#WT_SSal_1 <- wilcox.test(ab2$Streptococcus.salivarius ~ ab2_state)
+#WR_SSal_1 <- wilcoxonR(x = ab2$Streptococcus.salivarius, g = ab2_state, ci = TRUE)
+#Padjust_SSal_1 <- p.adjust(WT_SSal_0$p.value, method="BH")
+
+#WT_SPseu_1 <- wilcox.test(ab2$Streptococcus.pseudopneumoniae ~ ab2_state)
+#WR_SPseu_1 <- wilcoxonR(x = ab2$Streptococcus.pseudopneumoniae, g = ab2_state, ci = TRUE)
+#Padjust_SPseu_1 <- p.adjust(WT_SPseu_0$p.value, method="BH")
+
+#WT_SPneu_1 <- wilcox.test(ab2$Streptococcus.pneumoniae ~ ab2_state)
+#WR_SPneu_1 <- wilcoxonR(x = ab2$Streptococcus.pneumoniae, g = ab2_state, ci = TRUE)
+#Padjust_SPneu_1 <- p.adjust(WT_SPneu_0$p.value, method="BH")
+
+#WT_SPara_1 <- wilcox.test(ab2$Streptococcus.parasanguinis ~ ab2_state)
+#WR_SPara_1 <- wilcoxonR(x = ab2$Streptococcus.parasanguinis, g = ab2_state, ci = TRUE)
+#Padjust_SPara_1 <- p.adjust(WT_SPara_0$p.value, method="BH")
+
+#WT_SOra_1 <- wilcox.test(ab2$Streptococcus.oralis ~ ab2_state)
+#WR_SOra_1 <- wilcoxonR(x = ab2$Streptococcus.oralis, g = ab2_state, ci = TRUE)
+#Padjust_SOra_1 <- p.adjust(WT_SOra_0$p.value, method="BH")
+
+#WT_Smit_1 <- wilcox.test(ab2$Streptococcus.mitis ~ ab2_state)
+#WR_Smit_1 <- wilcoxonR(x = ab2$Streptococcus.mitis, g = ab2_state, ci = TRUE)
+#Padjust_Smit_1 <- p.adjust(WT_Smit_0$p.value, method="BH")
+#WT_Sequi_1 <- wilcox.test(ab2$Streptococcus.equinus ~ ab2_state)
+#WR_Sequi_1 <- wilcoxonR(x = ab2$Streptococcus.equinus, g = ab2_state, ci = TRUE)
+#Padjust_Sequi_1 <- p.adjust(WT_Sequi_0$p.value, method="BH")
+#WT_Sthermo_1 <- wilcox.test(ab2$Streptococcus.thermophilus ~ ab2_state)
+#WR_Sthermo_1 <- wilcoxonR(x = ab2$Streptococcus.thermophilus, g = ab2_state, ci = TRUE)
+#Padjust_Sthermo_1 <- p.adjust(WT_Sthermo_0$p.value, method="BH")
+
+#WT_RM_1 <- wilcox.test(ab2$Rothia.mucilaginosa ~ ab2_state)
+#WR_RM_1 <- wilcoxonR(x = ab2$Rothia.mucilaginosa, g = ab2_state, ci = TRUE)
+#Padjust_RM_1 <- p.adjust(WT_RM_0$p.value, method="BH")
+#WT_RA_1 <- wilcox.test(ab2$Rothia.aeria ~ ab2_state)
+#WR_RA_1 <- wilcoxonR(x = ab2$Rothia.aeria, g = ab2_state, ci = TRUE)
+#Padjust_RA_1 <- p.adjust(WT_RA_0$p.value, method="BH")
+#WT_PM_1 <- wilcox.test(ab2$Prevotella.melaninogenica ~ ab2_state)
+#WR_PM_1 <- wilcoxonR(x = ab2$Prevotella.melaninogenica, g = ab2_state, ci = TRUE)
+#Padjust_PM_1 <- p.adjust(WT_PM_0$p.value, method="BH")
+#WT_PJ_1 <- wilcox.test(ab2$Prevotella.jejuni ~ ab2_state)
+#WR_PJ_1 <- wilcoxonR(x = ab2$Prevotella.jejuni, g = ab2_state, ci = TRUE)
+#Padjust_PJ_1 <- p.adjust(WT_PJ_0$p.value, method="BH")
+#WT_Nmuc_1 <- wilcox.test(ab2$Neisseria.mucosa ~ ab2_state)
+#WR_Nmuc_1 <- wilcoxonR(x = ab2$Neisseria.mucosa, g = ab2_state, ci = TRUE)
+#Padjust_Nmuc_1 <- p.adjust(WT_Nmuc_0$p.value, method="BH")
+#WT_Nmeng_1 <- wilcox.test(ab2$Neisseria.meningitidis ~ ab2_state)
+#WR_Nmeng_1 <- wilcoxonR(x = ab2$Neisseria.meningitidis, g = ab2_state, ci = TRUE)
+#Padjust_Nmeng_1 <- p.adjust(WT_Nmeng_0$p.value, method="BH")
+#WT_Nlac_1 <- wilcox.test(ab2$Neisseria.lactamica ~ ab2_state)
+#WR_Nlac_1 <- wilcoxonR(x = ab2$Neisseria.lactamica, g = ab2_state, ci = TRUE)
+#Padjust_Nlac_1 <- p.adjust(WR_Nlac_0$p.value, method="BH")
+#WT_Ngon_1 <- wilcox.test(ab2$Neisseria.gonorrhoeae ~ ab2_state)
+#WR_Ngon_1 <- wilcoxonR(x = ab2$Neisseria.gonorrhoeae, g = ab2_state, ci = TRUE)
+#Padjust_Ngon_1 <- p.adjust(WT_Ngon_0$p.value, method="BH")
+
+#WT_HP_1 <- wilcox.test(ab2$Haemophilus.parainfluenzae ~ ab2_state)
+#WR_HP_1 <- wilcoxonR(x = ab2$Haemophilus.parainfluenzae, g = ab2_state, ci = TRUE)
+#Padjust_HP_1 <- p.adjust(WT_HP_0$p.value, method="BH")
+#WT_HI_1 <- wilcox.test(ab2$Haemophilus.influenzae ~ ab2_state)
+#WR_HI_1 <- wilcoxonR(x = ab2$Haemophilus.influenzae, g = ab2_state, ci = TRUE)
+#Padjust_HI_1 <- p.adjust(WT_HI_0$p.value, method="BH")
+
+#WT_FP_1 <- wilcox.test(ab2$Fusobacterium.periodonticum ~ ab2_state)
+#WR_FP_1 <- wilcoxonR(x = ab2$Fusobacterium.periodonticum, g = ab2_state, ci = TRUE)
+#Padjust_FP_1 <- p.adjust(WT_FP_0$p.value, method="BH")
+#WT_ES_1 <- wilcox.test(ab2$Eubacterium.sulci ~ ab2_state)
+#WR_ES_1 <- wilcoxonR(x = ab2$Eubacterium.sulci, g = ab2_state, ci = TRUE)
+#Padjust_ES_1 <- p.adjust(WT_ES_0$p.value, method="BH")
+
+#WT_CA_1 <- wilcox.test(ab2$Corynebacterium.argentoratense ~ ab2_state)
+#WR_CA_1 <- wilcoxonR(x = ab2$Corynebacterium.argentoratense, g = ab2_state, ci = TRUE)
+#Padjust_CA_1 <- p.adjust(WT_CA_0$p.value, method="BH")
+#WT_CL_1 <- wilcox.test(ab2$Capnocytophaga.leadbetteri ~ ab2_state)
+#WR_CL_1 <- wilcoxonR(x = ab2$Capnocytophaga.leadbetteri, g = ab2_state, ci = TRUE)
+#Padjust_CL_1 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_CG_1 <- wilcox.test(ab2$Capnocytophaga.gingivalis ~ ab2_state)
+#WR_CG_1 <- wilcoxonR(x = ab2$Capnocytophaga.gingivalis, g = ab2_state, ci = TRUE)
+#Padjust_CG_1 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_CC_1 <- wilcox.test(ab2$Campylobacter.concisus ~ ab2_state)
+#WR_CC_1 <- wilcoxonR(x = ab2$Campylobacter.concisus, g = ab2_state, ci = TRUE)
+#Padjust_CC_1 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_AP_1 <- wilcox.test(ab2$Atopobium.parvulum ~ ab2_state)
+#WR_AP_1 <- wilcoxonR(x = ab2$Atopobium.parvulum, g = ab2_state, ci = TRUE)
+#Padjust_AP_1 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_AM_1 <- wilcox.test(ab2$Actinomyces.meyeri ~ ab2_state)
+#WR_AM_1 <- wilcoxonR(x = ab2$Actinomyces.meyeri, g = ab2_state, ci = TRUE)
+#Padjust_AM_1 <- p.adjust(WT_SSang_0$p.value, method="BH")
+
+
+#wilcoxonP_1 <- c(WT_VP_1$statistic, WT_VA_1$statistic, WT_Sthermo_1$statistic, 
+ #                WT_SSang_1$statistic, WT_SSal_1$statistic,
+  #        WT_SPseu_1$statistic, WT_SPneu_1$statistic, WT_SPara_1$statistic,
+   #       WT_SOra_1$statistic, WT_Smit_1$statistic, WT_Sequi_1$statistic,
+    ##      WT_RM_1$statistic, WT_RA_1$statistic, WT_PM_1$statistic, WT_PJ_1$statistic,
+      #    WT_Nmuc_1$statistic, WT_Nmeng_1$statistic, WT_Nlac_1$statistic, WT_Ngon_1$statistic,
+       #   WT_HP_1$statistic, WT_HI_1$statistic, WT_FP_1$statistic,
+        #  WT_ES_1$statistic, WT_CA_1$statistic, WT_CL_1$statistic,
+         # WT_CG_1$statistic, WT_CC_1$statistic, WT_AP_1$statistic, WT_AM_1$statistic)
+  
+
+#wilcoxonPp_1 <- c(WT_VP_1$p.value, WT_VA_1$p.value, WT_Sthermo_1$p.value,
+ #                 WT_SSang_1$p.value, WT_SSal_1$p.value,
+  ##        WT_SPseu_1$p.value, WT_SPneu_1$p.value, WT_SPara_1$p.value,
+    #      WT_SOra_1$p.value, WT_Smit_1$p.value, WT_Sequi_1$p.value,
+     #     WT_RM_1$p.value, WT_RA_1$p.value, WT_PM_1$p.value, WT_PJ_1$p.value,
+      #    WT_Nmuc_1$p.value, WT_Nmeng_1$p.value, WT_Nlac_1$p.value, WT_Ngon_1$p.value,
+       #   WT_HP_1$p.value, WT_HI_1$p.value, WT_FP_1$p.value,
+        #  WT_ES_1$p.value, WT_CA_1$p.value, WT_CL_1$p.value,
+         # WT_CG_1$p.value, WT_CC_1$p.value, WT_AP_1$p.value, WT_AM_1$p.value)
+
+#adjP_1 <- c(Padjust_VP_1, Padjust_VA_1, Padjust_SSang_1, Padjust_SSal_1,
+ #         Padjust_SPseu_1, Padjust_SPneu_1, Padjust_SPara_1,
+  #        Padjust_SOra_1, Padjust_Smit_1, Padjust_Sequi_1,
+   #       Padjust_RM_1, Padjust_RA_1, Padjust_PM_1, Padjust_PJ_1,
+    #      Padjust_Nmuc_1, Padjust_Nmeng_1, Padjust_Nlac_1, Padjust_Ngon_1,
+     #     Padjust_HP_1, Padjust_HI_1,Padjust_FP_1,
+      #    Padjust_ES_1, Padjust_CA_1,Padjust_CL_1,
+       #   Padjust_CG_1, Padjust_CC_1, Padjust_AP_1, Padjust_AM_1)
+
+#E2_1 <- c(WR_VP_1$r, WR_VA_1$r, WR_Sthermo_1$r, WR_SSang_1$r, WR_SSal_1$r,
+ #         WR_SPseu_1$r, WR_SPneu_1$r, WR_SPara_1$r,
+  #        WR_SOra_1$r, WR_Smit_1$r, WR_Sequi_1$r,
+   #       WR_RM_1$r, WR_RA_1$r, WR_PM_1$r, WR_PJ_1$r,
+    #      WR_Nmuc_1$r, WR_Nmeng_1$r, WR_Nlac_1$r, WR_Ngon_1$r,
+     #     WR_HP_1$r, WR_HI_1$r, WR_FP_1$r,
+      #    WR_ES_1$r, WR_CA_1$r, WR_CL_1$r,
+       #   WR_CG_1$r, WR_CC_1$r, WR_AP_1$r, WR_AM_1$r)
+
+#E2_lower_1 <- c(WR_VP_1$lower.ci, WR_VA_1$lower.ci, WR_Sthermo_1$lower.ci, WR_SSang_1$lower.ci, WR_SSal_1$lower.ci,
+ #         WR_SPseu_1$lower.ci, WR_SPneu_1$lower.ci, WR_SPara_1$lower.ci,
+  #        WR_SOra_1$lower.ci, WR_Smit_1$lower.ci, WR_Sequi_1$lower.ci,
+   #       WR_RM_1$lower.ci, WR_RA_1$lower.ci, WR_PM_1$lower.ci, WR_PJ_1$lower.ci,
+    #      WR_Nmuc_1$lower.ci, WR_Nmeng_1$lower.ci, WR_Nlac_1$lower.ci, WR_Ngon_1$lower.ci,
+     #     WR_HP_1$lower.ci, WR_HI_1$lower.ci, WR_FP_1$lower.ci,
+      #    WR_ES_1$lower.ci, WR_CA_1$lower.ci, WR_CL_1$lower.ci,
+       #   WR_CG_1$lower.ci, WR_CC_1$lower.ci, WR_AP_1$lower.ci, WR_AM_1$lower.ci)
+
+
+#E2_upper_1 <- c(WR_VP_1$upper.ci, WR_VA_1$upper.ci, WR_Sthermo_1$upper.ci, WR_SSang_1$upper.ci, WR_SSal_1$upper.ci,
+ #         WR_SPseu_1$upper.ci, WR_SPneu_1$upper.ci, WR_SPara_1$upper.ci,
+  #        WR_SOra_1$upper.ci, WR_Smit_1$upper.ci, WR_Sequi_1$upper.ci,
+   #       WR_RM_1$upper.ci, WR_RA_1$upper.ci, WR_PM_1$upper.ci, WR_PJ_1$upper.ci,
+    #      WR_Nmuc_1$upper.ci, WR_Nmeng_1$upper.ci, WR_Nlac_1$upper.ci, WR_Ngon_1$upper.ci,
+     #     WR_HP_1$upper.ci, WR_HI_1$upper.ci, WR_FP_1$upper.ci,
+      #    WR_ES_1$upper.ci, WR_CA_1$upper.ci, WR_CL_1$upper.ci,
+       #   WR_CG_1$upper.ci, WR_CC_1$upper.ci, WR_AP_1$upper.ci, WR_AM_1$upper.ci)
+
+#relAbund_1_statistics <-
+ # data.frame(cbind(species,wilcoxonP_1, wilcoxonPp_1, E2_1, E2_lower_1, E2_upper_1))
+#relAbund_1_statistics$wilcoxonPp_1 <- as.numeric(as.character(relAbund_1_statistics$wilcoxonPp_1))
+#relAbund_1_statistics$wilcoxonPp_1 <- round(relAbund_1_statistics$wilcoxonPp_1, 5)
+#relAbund_1_statistics$E2_1 <- as.numeric(as.character(relAbund_1_statistics$E2_1))
+#relAbund_1_statistics$E2_1 <- round(relAbund_1_statistics$E2_1, 2)
+#relAbund_1_statistics$E2_lower <- as.numeric(as.character(relAbund_1_statistics$E2_lower))
+#relAbund_1_statistics$E2_lower <- round(relAbund_1_statistics$E2_lower, 2)
+#relAbund_1_statistics$E2_upper <- as.numeric(as.character(relAbund_1_statistics$E2_upper))
+#relAbund_1_statistics$E2_upper <- round(relAbund_1_statistics$E2_upper, 2)
+
+# rename columns
+#colnames(relAbund_1_statistics) <-
+ # c("Species", "statistic", "adjusted_p", "R2", "R2_CI_lower", "R2_CI_upper")
+
+#relAbund_1_statistics$diff <-
+ # ifelse(relAbund_1_statistics$adjusted_p < 0.01, "diff", "no_diff")
+
+
+#write.csv(relAbund_1_statistics, file="relAbundance_1.csv")
+
+
+
+#ab3$ageGroup <- NULL
+#ab3_state <- ab3$state
+#ab3_state <- str_replace_all(ab3_state, "Healthy", "0")
+#ab3_state <- str_replace_all(ab3_state, "CF", "1")
+#ab3_state <- as.numeric(as.character(ab3_state))
+#ab3$state <- NULL
+
+
+#WT_VP_2 <- wilcox.test(ab3$Veillonella.parvula ~ ab3_state)
+#WR_VP_2 <- wilcoxonR(x = ab3$Veillonella.parvula, g = ab3_state, ci = TRUE)
+#Padjust_VP_2 <- p.adjust(WT_VP_0$p.value, method="BH")
+#WT_VA_2 <- wilcox.test(ab3$Veillonella.atypica ~ ab3_state)
+#WR_VA_2 <- wilcoxonR(x = ab3$Veillonella.atypica, g = ab3_state, ci = TRUE)
+#Padjust_VA_2 <- p.adjust(WT_VA_0$p.value, method="BH")
+
+#WT_SSang_2 <- wilcox.test(ab3$Streptococcus.sanguinis ~ ab3_state)
+#WR_SSang_2 <- wilcoxonR(x = ab3$Streptococcus.sanguinis, g = ab3_state, ci = TRUE)
+#Padjust_SSang_2 <- p.adjust(WT_SSang_0$p.value, method="BH")
+
+#WT_SSal_2 <- wilcox.test(ab3$Streptococcus.salivarius ~ ab3_state)
+#WR_SSal_2 <- wilcoxonR(x = ab3$Streptococcus.salivarius, g = ab3_state, ci = TRUE)
+#Padjust_SSal_2 <- p.adjust(WT_SSal_0$p.value, method="BH")
+
+#WT_SPseu_2 <- wilcox.test(ab3$Streptococcus.pseudopneumoniae ~ ab3_state)
+#WR_SPseu_2 <- wilcoxonR(x = ab3$Streptococcus.pseudopneumoniae, g = ab3_state, ci = TRUE)
+#Padjust_SPseu_2 <- p.adjust(WT_SPseu_0$p.value, method="BH")
+
+#WT_SPneu_2 <- wilcox.test(ab3$Streptococcus.pneumoniae ~ ab3_state)
+#WR_SPneu_2 <- wilcoxonR(x = ab3$Streptococcus.pneumoniae, g = ab3_state, ci = TRUE)
+#Padjust_SPneu_2 <- p.adjust(WT_SPneu_0$p.value, method="BH")
+
+#WT_SPara_2 <- wilcox.test(ab3$Streptococcus.parasanguinis ~ ab3_state)
+#WR_SPara_2 <- wilcoxonR(x = ab3$Streptococcus.parasanguinis, g = ab3_state, ci = TRUE)
+#Padjust_SPara_2 <- p.adjust(WT_SPara_0$p.value, method="BH")
+
+#WT_SOra_2 <- wilcox.test(ab3$Streptococcus.oralis ~ ab3_state)
+#WR_SOra_2 <- wilcoxonR(x = ab3$Streptococcus.oralis, g = ab3_state, ci = TRUE)
+#Padjust_SOra_2 <- p.adjust(WT_SOra_0$p.value, method="BH")
+
+#WT_Smit_2 <- wilcox.test(ab3$Streptococcus.mitis ~ ab3_state)
+#WR_Smit_2 <- wilcoxonR(x = ab3$Streptococcus.mitis, g = ab3_state, ci = TRUE)
+#Padjust_Smit_2 <- p.adjust(WT_Smit_0$p.value, method="BH")
+#WT_Sequi_2 <- wilcox.test(ab3$Streptococcus.equinus ~ ab3_state)
+#WR_Sequi_2 <- wilcoxonR(x = ab3$Streptococcus.equinus, g = ab3_state, ci = TRUE)
+#Padjust_Sequi_2 <- p.adjust(WT_Sequi_0$p.value, method="BH")
+#WT_Sthermo_2 <- wilcox.test(ab3$Streptococcus.thermophilus ~ ab3_state)
+#WR_Sthermo_2 <- wilcoxonR(x = ab3$Streptococcus.thermophilus, g = ab3_state, ci = TRUE)
+#Padjust_Sthermo_2 <- p.adjust(WT_Sthermo_0$p.value, method="BH")
+
+#WT_RM_2 <- wilcox.test(ab3$Rothia.mucilaginosa ~ ab3_state)
+#WR_RM_2 <- wilcoxonR(x = ab3$Rothia.mucilaginosa, g = ab3_state, ci = TRUE)
+#Padjust_RM_2 <- p.adjust(WT_RM_0$p.value, method="BH")
+#WT_RA_2 <- wilcox.test(ab3$Rothia.aeria ~ ab3_state)
+#WR_RA_2 <- wilcoxonR(x = ab3$Rothia.aeria, g = ab3_state, ci = TRUE)
+#Padjust_RA_2 <- p.adjust(WT_RA_0$p.value, method="BH")
+#WT_PM_2 <- wilcox.test(ab3$Prevotella.melaninogenica ~ ab3_state)
+#WR_PM_2 <- wilcoxonR(x = ab3$Prevotella.melaninogenica, g = ab3_state, ci = TRUE)
+#Padjust_PM_2 <- p.adjust(WT_PM_0$p.value, method="BH")
+#WT_PJ_2 <- wilcox.test(ab3$Prevotella.jejuni ~ ab3_state)
+#WR_PJ_2 <- wilcoxonR(x = ab3$Prevotella.jejuni, g = ab3_state, ci = TRUE)
+#Padjust_PJ_2 <- p.adjust(WT_PJ_0$p.value, method="BH")
+#WT_Nmuc_2 <- wilcox.test(ab3$Neisseria.mucosa ~ ab3_state)
+#WR_Nmuc_2 <- wilcoxonR(x = ab3$Neisseria.mucosa, g = ab3_state, ci = TRUE)
+#Padjust_Nmuc_2 <- p.adjust(WT_Nmuc_0$p.value, method="BH")
+#WT_Nmeng_2 <- wilcox.test(ab3$Neisseria.meningitidis ~ ab3_state)
+#WR_Nmeng_2 <- wilcoxonR(x = ab3$Neisseria.meningitidis, g = ab3_state, ci = TRUE)
+#Padjust_Nmeng_2 <- p.adjust(WT_Nmeng_0$p.value, method="BH")
+#WT_Nlac_2 <- wilcox.test(ab3$Neisseria.lactamica ~ ab3_state)
+#WR_Nlac_2 <- wilcoxonR(x = ab3$Neisseria.lactamica, g = ab3_state, ci = TRUE)
+#Padjust_Nlac_2 <- p.adjust(WR_Nlac_0$p.value, method="BH")
+#WT_Ngon_2 <- wilcox.test(ab3$Neisseria.gonorrhoeae ~ ab3_state)
+#WR_Ngon_2 <- wilcoxonR(x = ab3$Neisseria.gonorrhoeae, g = ab3_state, ci = TRUE)
+#Padjust_Ngon_2 <- p.adjust(WT_Ngon_0$p.value, method="BH")
+
+#WT_HP_2 <- wilcox.test(ab3$Haemophilus.parainfluenzae ~ ab3_state)
+#WR_HP_2 <- wilcoxonR(x = ab3$Haemophilus.parainfluenzae, g = ab3_state, ci = TRUE)
+#Padjust_HP_2 <- p.adjust(WT_HP_0$p.value, method="BH")
+#WT_HI_2 <- wilcox.test(ab3$Haemophilus.influenzae ~ ab3_state)
+#WR_HI_2 <- wilcoxonR(x = ab3$Haemophilus.influenzae, g = ab3_state, ci = TRUE)
+#Padjust_HI_2 <- p.adjust(WT_HI_0$p.value, method="BH")
+
+#WT_FP_2 <- wilcox.test(ab3$Fusobacterium.periodonticum ~ ab3_state)
+#WR_FP_2 <- wilcoxonR(x = ab3$Fusobacterium.periodonticum, g = ab3_state, ci = TRUE)
+#Padjust_FP_2 <- p.adjust(WT_FP_0$p.value, method="BH")
+#WT_ES_2 <- wilcox.test(ab3$Eubacterium.sulci ~ ab3_state)
+#WR_ES_2 <- wilcoxonR(x = ab3$Eubacterium.sulci, g = ab3_state, ci = TRUE)
+#Padjust_ES_2 <- p.adjust(WT_ES_0$p.value, method="BH")
+
+#WT_CA_2 <- wilcox.test(ab3$Corynebacterium.argentoratense ~ ab3_state)
+#WR_CA_2 <- wilcoxonR(x = ab3$Corynebacterium.argentoratense, g = ab3_state, ci = TRUE)
+#Padjust_CA_2 <- p.adjust(WT_CA_0$p.value, method="BH")
+#WT_CL_2 <- wilcox.test(ab3$Capnocytophaga.leadbetteri ~ ab3_state)
+#WR_CL_2 <- wilcoxonR(x = ab3$Capnocytophaga.leadbetteri, g = ab3_state, ci = TRUE)
+#Padjust_CL_2 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_CG_2 <- wilcox.test(ab3$Capnocytophaga.gingivalis ~ ab3_state)
+#WR_CG_2 <- wilcoxonR(x = ab3$Capnocytophaga.gingivalis, g = ab3_state, ci = TRUE)
+#Padjust_CG_2 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_CC_2 <- wilcox.test(ab3$Campylobacter.concisus ~ ab3_state)
+#WR_CC_2 <- wilcoxonR(x = ab3$Campylobacter.concisus, g = ab3_state, ci = TRUE)
+#Padjust_CC_2 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_AP_2 <- wilcox.test(ab3$Atopobium.parvulum ~ ab3_state)
+#WR_AP_2 <- wilcoxonR(x = ab3$Atopobium.parvulum, g = ab3_state, ci = TRUE)
+#Padjust_AP_2 <- p.adjust(WT_SSang_0$p.value, method="BH")
+#WT_AM_2 <- wilcox.test(ab3$Actinomyces.meyeri ~ ab3_state)
+#WR_AM_2 <- wilcoxonR(x = ab3$Actinomyces.meyeri, g = ab3_state, ci = TRUE)
+#Padjust_AM_2 <- p.adjust(WT_SSang_0$p.value, method="BH")
+
+
+
+#wilcoxonP_2 <- c(WT_VP_2$statistic, WT_VA_2$statistic, WT_Sthermo_2$statistic, 
+ #                WT_SSang_2$statistic, WT_SSal_2$statistic,
+#          WT_SPseu_2$statistic, WT_SPneu_2$statistic, WT_SPara_2$statistic,
+ #         WT_SOra_2$statistic, WT_Smit_2$statistic, WT_Sequi_2$statistic,
+  #        WT_RM_2$statistic, WT_RA_2$statistic, WT_PM_2$statistic, WT_PJ_2$statistic,
+   #       WT_Nmuc_2$statistic, WT_Nmeng_2$statistic, WT_Nlac_2$statistic, WT_Ngon_2$statistic,
+    #      WT_HP_2$statistic, WT_HI_2$statistic, WT_FP_2$statistic,
+     #     WT_ES_2$statistic, WT_CA_2$statistic, WT_CL_2$statistic,
+      #    WT_CG_2$statistic, WT_CC_2$statistic, WT_AP_2$statistic, WT_AM_2$statistic)
+  
+
+#wilcoxonPp_2 <- c(WT_VP_2$p.value, WT_VA_2$p.value, WT_Sthermo_2$p.value,
+ #                 WT_SSang_2$p.value, WT_SSal_2$p.value,
+  #        WT_SPseu_2$p.value, WT_SPneu_2$p.value, WT_SPara_2$p.value,
+   #       WT_SOra_2$p.value, WT_Smit_2$p.value, WT_Sequi_2$p.value,
+    #      WT_RM_2$p.value, WT_RA_2$p.value, WT_PM_2$p.value, WT_PJ_2$p.value,
+     #     WT_Nmuc_2$p.value, WT_Nmeng_2$p.value, WT_Nlac_2$p.value, WT_Ngon_2$p.value,
+      ##    WT_HP_2$p.value, WT_HI_2$p.value, WT_FP_2$p.value,
+        #  WT_ES_2$p.value, WT_CA_2$p.value, WT_CL_2$p.value,
+         # WT_CG_2$p.value, WT_CC_2$p.value, WT_AP_2$p.value, WT_AM_2$p.value)
+
+#adjP_2 <- c(Padjust_VP_2, Padjust_VA_2, Padjust_SSang_2, Padjust_SSal_2,
+ #         Padjust_SPseu_2, Padjust_SPneu_2, Padjust_SPara_2,
+  #        Padjust_SOra_2, Padjust_Smit_2, Padjust_Sequi_2,
+   #       Padjust_RM_2, Padjust_RA_2, Padjust_PM_2, Padjust_PJ_2,
+    #      Padjust_Nmuc_2, Padjust_Nmeng_2, Padjust_Nlac_2, Padjust_Ngon_2,
+     #     Padjust_HP_2, Padjust_HI_2,Padjust_FP_2,
+      #    Padjust_ES_2, Padjust_CA_2,Padjust_CL_2,
+       #   Padjust_CG_2, Padjust_CC_2, Padjust_AP_2, Padjust_AM_2)
+
+#E2_2 <- c(WR_VP_2$r, WR_VA_2$r, WR_Sthermo_2$r, WR_SSang_2$r, WR_SSal_2$r,
+ #         WR_SPseu_2$r, WR_SPneu_2$r, WR_SPara_2$r,
+  #        WR_SOra_2$r, WR_Smit_2$r, WR_Sequi_2$r,
+   #       WR_RM_2$r, WR_RA_2$r, WR_PM_2$r, WR_PJ_2$r,
+    #      WR_Nmuc_2$r, WR_Nmeng_2$r, WR_Nlac_2$r, WR_Ngon_2$r,
+     #     WR_HP_2$r, WR_HI_2$r, WR_FP_2$r,
+      ##    WR_ES_2$r, WR_CA_2$r, WR_CL_2$r,
+        #  WR_CG_2$r, WR_CC_2$r, WR_AP_2$r, WR_AM_2$r)
+
+#E2_lower_2 <- c(WR_VP_2$lower.ci, WR_VA_2$lower.ci, WR_Sthermo_2$lower.ci, WR_SSang_2$lower.ci, #WR_SSal_2$lower.ci,
+  #        WR_SPseu_2$lower.ci, WR_SPneu_2$lower.ci, WR_SPara_2$lower.ci,
+ #         WR_SOra_2$lower.ci, WR_Smit_2$lower.ci, WR_Sequi_2$lower.ci,
+   #       WR_RM_2$lower.ci, WR_RA_2$lower.ci, WR_PM_2$lower.ci, WR_PJ_2$lower.ci,
+    #      WR_Nmuc_2$lower.ci, WR_Nmeng_2$lower.ci, WR_Nlac_2$lower.ci, WR_Ngon_2$lower.ci,
+     #     WR_HP_2$lower.ci, WR_HI_2$lower.ci, WR_FP_2$lower.ci,
+      #    WR_ES_2$lower.ci, WR_CA_2$lower.ci, WR_CL_2$lower.ci,
+       #   WR_CG_2$lower.ci, WR_CC_2$lower.ci, WR_AP_2$lower.ci, WR_AM_2$lower.ci)
+
+
+#E2_upper_2 <- c(WR_VP_2$upper.ci, WR_VA_2$upper.ci, WR_Sthermo_2$upper.ci, WR_SSang_2$upper.ci, #WR_SSal_2$upper.ci,
+ #         WR_SPseu_2$upper.ci, WR_SPneu_2$upper.ci, WR_SPara_2$upper.ci,
+  #        WR_SOra_2$upper.ci, WR_Smit_2$upper.ci, WR_Sequi_2$upper.ci,
+   #       WR_RM_2$upper.ci, WR_RA_2$upper.ci, WR_PM_2$upper.ci, WR_PJ_2$upper.ci,
+    #      WR_Nmuc_2$upper.ci, WR_Nmeng_2$upper.ci, WR_Nlac_2$upper.ci, WR_Ngon_2$upper.ci,
+     #     WR_HP_2$upper.ci, WR_HI_2$upper.ci, WR_FP_2$upper.ci,
+      #    WR_ES_2$upper.ci, WR_CA_2$upper.ci, WR_CL_2$upper.ci,
+       #   WR_CG_2$upper.ci, WR_CC_2$upper.ci, WR_AP_2$upper.ci, WR_AM_2$upper.ci)
+
+#relAbund_2_statistics <-
+ # data.frame(cbind(species,wilcoxonP_2, wilcoxonPp_2, E2_2, E2_lower_2, E2_upper_2))
+#relAbund_2_statistics$wilcoxonPp_2 <- as.numeric(as.character(relAbund_2_statistics$wilcoxonPp_2))
+#relAbund_2_statistics$wilcoxonPp_2 <- round(relAbund_2_statistics$wilcoxonPp_2, 5)
+#relAbund_2_statistics$E2_2 <- as.numeric(as.character(relAbund_2_statistics$E2_2))
+#relAbund_2_statistics$E2_2 <- round(relAbund_2_statistics$E2_2, 2)
+#relAbund_2_statistics$E2_lower <- as.numeric(as.character(relAbund_2_statistics$E2_lower))
+#relAbund_2_statistics$E2_lower <- round(relAbund_2_statistics$E2_lower, 2)
+#relAbund_2_statistics$E2_upper <- as.numeric(as.character(relAbund_2_statistics$E2_upper))
+#relAbund_2_statistics$E2_upper <- round(relAbund_2_statistics$E2_upper, 2)
+
+# rename columns
+#colnames(relAbund_2_statistics) <-
+ # c("Species", "statistic", "adjusted_p", "R2", "R2_CI_lower", "R2_CI_upper")
+
+#relAbund_2_statistics$diff <-
+ # ifelse(relAbund_2_statistics$adjusted_p < 0.01, "diff", "no_diff")
+
+#write.csv(relAbund_2_statistics, file="relAbundance_3.csv")
+
+```
+
+
+
+
+
+```{r}
+# Make bubble plot with absolute abundance
+all_bubble_CF$n <- c("n = 5","n = 20","n = 16")
+all_bubble_H$n <- c("n = 28","n = 9","n = 15")
+
+all_bubble_CF_L <- 
+  gather(all_bubble_CF, key=species, 
+         value=abundance, colnames(all_bubble_CF[,2:30]))
+
+all_bubble_H_L <- 
+  gather(all_bubble_H, key=species, 
+         value=abundance, colnames(all_bubble_H[,2:30]))
+
+allBubbleAbsolute <-
+  rbind(all_bubble_H_L, all_bubble_CF_L)
+allBubbleAbsolute$species <- 
+  gsub(x = allBubbleAbsolute$species, pattern = "\\.", replacement = " ") 
+
+bubbleAbsolute <-
+  ggplot(allBubbleAbsolute,
+       aes(x=AgeGroup, y=species, size=abundance, color=abundance)) +
+  geom_point(alpha=0.6) +
+  scale_size(range = c(-1, 25), name="Absolute abundance",
+             breaks = c(1, 5, 10, 20, 30, 40, 60, 90),
+             labels = c(1, 5, 10, 20, 30, 40, 60, 90)) +
+  facet_wrap(~state, ncol = 4, scales = "free_x") +
+  xlab("\nAge (in years)") +
+  ylab("") +
+  scale_x_discrete(breaks=c("0 years", "1-3 years", "4-6 years"),
+                   labels=c("0", "1-3", "4-6")) +
+  scale_color_viridis("Absolute abundance",
+                       direction = -1, option = "D",
+                      breaks = c(1, 5, 10, 20, 30, 40, 60, 90),
+                      labels = c(1, 5, 10, 20, 30, 40, 60, 90)) +
+  theme_pubr(base_size = 14, 
+             base_family = "Helvetica",
+             border = TRUE, legend = "right") +
+  theme(axis.text.y = element_text(face="italic",  size=14, family = "Helvetica"),
+        axis.text.x = element_text(size = 14, angle = 0, family = "Helvetica"),
+        strip.text.x = element_text(size = 14, colour = "black", angle = 0),
+        legend.title=element_text(size=14, family = "Helvetica"), 
+        text = element_text(size=14, family = "Helvetica"),
+        legend.text=element_text(size=14, family = "Helvetica")) +
+  guides(size=guide_legend(), color=guide_legend()) +
+  ggtitle("") 
+bubbleAbsolute
+
+
+#ggsave("Figure02_Nov2020_NPJ.pdf", 
+ #      plot = bubbleAbsolute,
+  #     scale = 1,
+   #    width = 10.8,
+    #   height = 10,
+     #  dpi = 1200)
+#dev.off()
+
+
+
+# Statistical test (absolute abundance per health state and age)
+# Statistical tests
+all_bubble_0_3months_abs <- 
+  subset(all_bubble, AgeGroup == "0 years" | AgeGroup == "1-3 years")
+all_bubble_0_3months_abs$state <- 
+  factor(all_bubble_0_3months_abs$state, levels = c("CF", "Healthy"))
+all_bubble_0_3months_abs$Streptococcus.phage <- NULL
+all_bubble_0_3months_abs$SUM <- rowSums(all_bubble_0_3months_abs[1:29])                 
+
+
+# First three years of life
+firstthree <-
+  ggplot(all_bubble_0_3months_abs, aes(x=state, y=SUM)) +
+  geom_boxplot() +
+  xlab("Health state") +
+  ylab("Bacterial cells per human cell\n") +
+  geom_point(size = 6, alpha = 0.6) +
+  theme_pubr(base_size = 14, base_family = "Helvetica") +
+  ylim(0,25000) +
+  ggtitle("0-3 years of age") +
+  stat_compare_means(method = "wilcox.test", 
+                     label = "p.format", size = 5, family = "Helvetica") +
+  theme(axis.text.y = element_text(colour = "black", size = 14), 
+    axis.text.x = element_text(colour = "black", size = 14), 
+    legend.text = element_text(size = 14, colour ="black"), 
+    legend.position = "right", axis.title.y = element_text(size = 14), 
+    axis.title.x = element_text(size = 14, colour = "black"), 
+    legend.title = element_text(size = 14, colour = "black", face="bold"), 
+   panel.background = element_blank(), 
+   panel.border = element_rect(colour = "black", fill = NA, size = 1.0),
+    legend.key=element_blank()) 
+firstthree
+
+# Fourht and fifth year of life
+all_bubble_4_6_years_abs <- subset(all_bubble, AgeGroup == "4-6 years")
+all_bubble_4_6_years_abs$state <- factor(all_bubble_4_6_years_abs$state, levels = c("CF", "Healthy"))
+all_bubble_4_6_years_abs$Streptococcus.phage <- NULL
+all_bubble_4_6_years_abs$SUM <- rowSums(all_bubble_4_6_years_abs[1:29])                 
+
+
+further <-
+  ggplot(all_bubble_4_6_years_abs, aes(x=state, y=SUM)) +
+  geom_boxplot() +
+  xlab("Health state") +
+  ylab("Bacterial cells per human cell\n") +
+  geom_point(size = 6, alpha = 0.6) +
+  theme_pubr(base_size = 14, base_family = "Helvetica") +
+  ylim(0,25000) +
+  ggtitle("4-6 years of age") +
+  stat_compare_means(method = "wilcox.test",
+                     label = "p.format", size = 5, family = "Helvetica") +
+  theme(axis.text.y = element_text(colour = "black", size = 14), 
+    axis.text.x = element_text(colour = "black", size = 14), 
+    legend.text = element_text(size = 14, colour ="black"), 
+    legend.position = "right", axis.title.y = element_text(size = 14), 
+    axis.title.x = element_text(size = 14, colour = "black"), 
+    legend.title = element_text(size = 14, colour = "black", face="bold"), 
+    panel.background = element_blank(), 
+    panel.border = element_rect(colour = "black", fill = NA, size = 1.0),
+    legend.key=element_blank())
+
+ff <-
+  grid.arrange(firstthree, further, nrow = 1)
+
+#ggsave("loadDifference_CFANA.tiff", 
+ #      plot = ff,
+  #     device = "tiff",
+   #    scale = 1,
+    #   width = 8.8,
+     #  height = 4.25,
+      # dpi = 1200)
+#dev.off()
+
+
+wilcoxonR(all_bubble_0_3months_abs$SUM, all_bubble_0_3months_abs$state, ci = TRUE)
+wilcoxonR(all_bubble_4_6_years_abs$SUM, all_bubble_4_6_years_abs$state, ci = TRUE)
+
+```
+
+
+
+
+
+
+
+# Beta-diversity ###
+```{r}
+
+# set seed to make analysis reproducible
+set.seed(2)
+
+# for most abundant species
+mds_species <- metaMDS(sqrt(spatial_coreSpecies[,1:29]), distance = "bray",
+                       k=3, trymax = 100,
+                       autotransform = FALSE)
+
+nmds <- mds_species
+
+stressplot(nmds)
+data.scores = as.data.frame(scores(nmds))
+data.scores$Siblings = spatial_metaData$Siblings
+data.scores$Antibiotics = spatial_metaData$Antibiotics
+data.scores$state = spatial_metaData$state
+data.scores$Location = spatial_metaData$Location
+data.scores$SampleYear = spatial_metaData$SampleYear
+data.scores$ageGroup = spatial_metaData$ageGroup
+data.scores$day = spatial_metaData$SampleDay
+data.scores$PA_category = spatial_metaData$PA_category
+data.scores$Patient <- spatial_metaData$Patient
+data.scores$site <- rownames(data.scores)
+
+data.scores$Antibiotics <- 
+  str_replace_all(data.scores$Antibiotics, "y", "Yes")
+data.scores$Antibiotics <- 
+  str_replace_all(data.scores$Antibiotics, "n", "No")
+data.scores$Antibiotics <- 
+  str_replace_all(data.scores$Antibiotics, "No_but_infect", "No")
+data.scores$SampleYear <-
+  str_replace_all(data.scores$SampleYear, "autumn", "Autumn")
+data.scores$SampleYear <-
+  str_replace_all(data.scores$SampleYear, "spring", "Spring")
+data.scores$SampleYear <-
+  str_replace_all(data.scores$SampleYear, "summer", "Summer")
+data.scores$SampleYear <-
+  str_replace_all(data.scores$SampleYear, "winter", "Winter")
+data.scores$SampleYear <- factor(data.scores$SampleYear, 
+                                 levels = c("Spring", "Summer", "Autumn", "Winter"))
+data.scores$absAbundance <- 
+  spatial_metaData2$rare_bacterialBurden + spatial_metaData2$abundant_bacterialBurden
+
+metaDataENV <- 
+  select(spatial_metaData2, c(Antibiotics, 
+                               #Siblings,
+                               Season=SampleYear,
+                               state, 
+                               PA=PA_category, 
+                               ageGroup, 
+                               Div_coreSpecies=abundant_shannon, 
+                               Div_rareSpecies=rare_shannon,
+                               load_coreSpecies=abundant_bacterialBurden, 
+                               load_rareSpecies=rare_bacterialBurden)) 
+
+data.envit <- envfit(nmds, metaDataENV, permutation = 999)
+data.envit
+
+
+spp.scrs <- as.data.frame(scores(data.envit, display = c("vectors")))
+spp.scrs <- cbind(spp.scrs, Species = rownames(spp.scrs))
+
+spp.scrs.factors <- as.data.frame(scores(data.envit, display = c("factors")))
+signif_factors = c("stateCF", "stateHealthy")
+spp.scrs.factors <- subset(spp.scrs.factors, rownames(spp.scrs.factors) %in% signif_factors)
+spp.scrs.factors <- cbind(spp.scrs.factors, Species = rownames(spp.scrs.factors))
+spp.scrs.factors$Species <- str_replace(spp.scrs.factors$Species, "stateCF", "CF")
+spp.scrs.factors$Species <- str_replace(spp.scrs.factors$Species, "stateHealthy", "Healthy")
+
+
+library(ggforce)
+#library(scales)
+p123 <- 
+  ggplot(data.scores) +
+  geom_point(aes(x=NMDS1, y=NMDS2, color=state, size=data.scores$absAbundance), alpha=0.5) +
+  stat_ellipse(aes(x=NMDS1, y=NMDS2, color=state, fill=state), geom="polygon", alpha=0.1) +
+  geom_segment(data = spp.scrs.factors,
+               aes(x = 0, xend = NMDS1, y = 0, yend = NMDS2),
+               arrow = arrow(length = unit(0.4, "cm")), colour = "black", size = 1, alpha=0.5) +
+  xlim(-2.0, 2.0) +
+
+  ylim(-1.0, 1.0) +
+  ylab("\n\n NMDS2") +
+  theme_pubr(base_size = 12, border = TRUE, legend = "right") +
+  labs(color="State", fill="State", size="Bacterial load") +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank())
+
+p123
+
+```
+
+
+# Abundant species ####
+# PCA ###############
+```{r}
+patternRec <- spatial_coreSpecies
+
+patternRec$PA_and_patient <- spatial_metaData2$state
+PA_and_patient <- patternRec$PA_and_patient
+
+pca_patternRec <- 
+  prcomp(patternRec[,c(1:29)],
+         center = FALSE, scale. = TRUE)
+
+fviz_eig(pca_patternRec)
+
+pcaInd_patternRec <- 
+  fviz_pca_ind(pca_patternRec, 
+               geom.ind = c("point", "arrow"), 
+               pointshape = 21, 
+               pointsize = 3, 
+               #palette = c("#00AFBB", "#E7B800", "#FC4E07", "blue"),
+               fill.ind = PA_and_patient, 
+               col.ind = PA_and_patient, 
+               addEllipses = TRUE,
+               ellipse.type = "confidence",
+               ellipse.level=0.95,
+               repel = FALSE,
+               legend.title = "") +
+  ggtitle("") +
+  theme_pubr(border = TRUE, base_size = 12, legend = "right")
+pcaInd_patternRec
+
+# Graph of variables. 
+# Positive correlated variables point to the same side of the plot. 
+# Negative  correlated variables point to opposite sides of the graph.
+pcaVAR_patternRec <- 
+  fviz_pca_var(pca_patternRec,
+               select.var = list(contrib = 25),
+               col.var = "contrib", 
+               geom = c("arrow"),
+               gradient.cols = c("#00AFBB", 
+                                 "#E7B800", 
+                                 "#FC4E07"),
+               repel = TRUE) +
+  theme_pubr(border=TRUE, base_size = 12, legend = "right") +
+  theme(title = element_blank(),
+        legend.title = element_text())
+
+
+betaDiversity <-
+  ggarrange(p123, ggarrange(pcaInd_patternRec, pcaVAR_patternRec, 
+            heights = c(4, 4), nrow = 1, align = "v", labels = c("b)", "c)")),
+            nrow=2, ncol=1, heights = c(4,4), labels = "a)")
+
+
+#ggsave("betaDiversity_CFANA.tiff", 
+ #      plot = betaDiversity,
+  #     width = 10,
+   #    height = 10,
+    #   scale = 1,
+     #  dpi = 600)
+
+
+# Extract variable contributions of PCA
+varContribution_20 <- data.frame(pcaVAR_patternRec$data[1:25,])
+# rename columns
+colnames(varContribution_20) <-
+  c("variable", "Dim1", "Dim2", "coord", "cos2", "contrib")
+# remove rownames
+rownames(varContribution_20) <- NULL
+# order table
+varContribution_20 <- 
+  varContribution_20[order(-varContribution_20$contrib),]
+# reset row numbering
+rownames(varContribution_20) <- NULL
+
+library(formattable)
+varContribution20 <-
+  formattable(varContribution_20, 
+              align =c("l","c","c","c", "c", "c"), 
+              list(`variable` = formatter("span", 
+                                          style = ~ style(color = "grey",
+                                                          font.weight = "bold"))))
+varContribution20
+
+```
+
+
+
+
+# Abundant species
+```{r}
+# hierarchical clustering (unsupervised learning)
+# https://uc-r.github.io/hc_clustering
+
+df <- scale(spatial_coreSpecies)
+sa <- spatial_coreSpecies
+
+#Assessing clustering tendency
+gradient.color <- list(low = "steelblue",  high = "white")
+
+df %>%     # Scale variables
+  get_clust_tendency(n=50, gradient = gradient.color)
+
+#Elbow Method for finding the optimal number of clusters
+set.seed(123)
+# Compute and plot wss for k = 2 to k = 15.
+k.max <- 15
+wss <- sapply(1:k.max, 
+              function(k){kmeans(df, k, nstart=50,iter.max = 15 )$tot.withinss})
+
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+
+
+
+# Dissimilarity matrix
+d <- dist(df, method = "euclidean")
+
+# Hierarchical clustering using Complete Linkage
+hc3 <- hclust(d, method = "ward.D" )
+hcd <- as.dendrogram(hc3)
+nodePar2 <- list(lab.cex = 0.6, pch = c(NA, 19), 
+                cex = 0.7, col = "blue")
+library(ggdendro)
+
+dendo <-
+ggdendrogram(hc3, size = 2,
+             labels = TRUE,
+             leaf_labels = TRUE) +
+  theme_pubr(base_size = 14, base_family = "Helvetica") +
+  ylab("Height") +
+  xlab(" ") +
+  theme(axis.text.y = element_text(colour = "black", size = 14, family = "Helvetica"), 
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(size = 14, family = "Helvetica"), 
+    panel.border = element_rect(colour = "black", fill = NA, size = 1.0),
+    axis.title.x = element_blank(), 
+    axis.ticks.x = element_blank(),
+    panel.background = element_blank(),
+    legend.position = "none") +
+  geom_text(aes(y=25, x=19, label = "k1"), 
+            hjust = 0.02,
+            vjust=0,
+            #family="Helvetica",
+            size = 4) +
+  geom_text(aes(y=25, x=58, label = "k2"), 
+            hjust = 0.02,
+            vjust=0,
+            #family="Helvetica",
+            size = 4) +
+  geom_text(aes(y=55, x=78, label = "k3"), 
+            hjust = 0.02,
+            vjust=0,
+            #family="Helvetica",
+            size = 4)
+  dendo
+
+#ggsave("dendo.tiff", 
+ #      plot = dendo,
+  #     device = "tiff",
+   #    scale = 1,
+    #   width = 8.3,
+     #  height = 4.02,
+      # dpi = 1200)
+#dev.off()
+
+
+
+
+
+
+# Cut tree into 4 groups
+sub_grp <- cutree(hc3, k = 4, h = 40)
+spatial_metaData2$k <- sub_grp
+spatial_metaData2$k <- factor(spatial_metaData2$k)
+#levels(spatial_metaData2$k) <- c("k1", "k2", "k3", "k4")
+list_k3 = c("KGCF14", "KGCF17", "KGCF18", "KGCF25", "KGCF26", "KGCF40", "KGCF46", "KGCF51")
+
+list_k2 = c("KGCF45", "KGCF21", "KGCF38", "EMCF34", "EMCF28", "KGCF06", "KGCF27", "KGCF35",
+            "EMCF09", "KGCF04", "KGCF42", "KGCF32", "KGCF43", "KGCF41", "KGCF36", "KGCF12", "KGCF19",
+            "KGCF24", "MCF12s1","MCF06s1", "KGCF50", "KGCF48", "KGCF16", "KGCF10", "EMCF21", "EMCF29", "EMCF33",
+            "KGCF28", "KGCF33", "KGCF37", "KGCF58", "KGCF21", "EMCF05", "EMCF16")
+
+list_k2_k3 = c(list_k2, list_k3)
+
+spatial_metaData2$k <-
+  ifelse(rownames(spatial_metaData2) %in% list_k3, "k3", spatial_metaData2$k)
+spatial_metaData2$k <-
+  ifelse(rownames(spatial_metaData2) %in% list_k2, "k2", spatial_metaData2$k)
+spatial_metaData2$k <-
+  ifelse(rownames(spatial_metaData2) %nin% list_k2_k3, "k1", spatial_metaData2$k)
+
+sub_grp <- spatial_metaData2$k
+sub_grp
+# Number of members in each cluster
+table(sub_grp)
+
+set.seed(103)
+
+fvizClust <-
+  fviz_cluster(list(data = df, cluster = sub_grp), ellipse = TRUE,
+             ellipse.type = "convex",
+             repel = TRUE,
+             alpha = 0.7,
+             shape = 19,
+             geom = c("point"), 
+             ggtheme = theme_pubr(base_size = 14, 
+                                  base_family = "Helvetica")) +
+  ggtitle("") +
+  scale_colour_manual(values = c("#333300", "#336600", "#000066", "black", "purple")) +
+  scale_fill_manual(values = c("#333300", "#336600", "#000066", "black", "purple")) +
+  theme(axis.text.y = element_text(colour = "black", size = 14, family = "Helvetica"), 
+    axis.text.x = element_text(colour = "black", size = 14, family = "Helvetica"),
+    axis.title.y = element_text(size = 14, family = "Helvetica"), 
+    panel.border = element_rect(colour = "black", fill = NA, size = 1.0),
+    axis.title.x = element_text(size = 14, colour = "black", family = "Helvetica"), 
+    panel.background = element_blank(),
+    legend.position = "none") +
+  geom_text(aes(y=-2, x=14, label = "k3"), 
+            hjust = 0.02,
+            vjust=0,
+            size = 4) +
+  geom_text(aes(y=-1, x=1.1, label = "k2"), 
+            hjust = 0.02,
+            vjust=0,
+            size = 4) +
+  geom_text(aes(y=-1.1, x=-3.5, label = "k1"), 
+            hjust = 0.02,
+            vjust=0,
+            size = 4)
+fvizClust
+
+
+
+sa$k <- spatial_metaData2$k
+
+# remove duplicates and sum up
+sa <- 
+  ddply(sa,"k", numcolwise(median))
+
+# Set first column as row names and remove first column
+rownames(sa) = sa[,1]
+sa$k <- NULL
+sa <-
+  sa[, colSums(sa != 0) > 0]
+
+
+col <- c("firebrick4", "tomato2", "sienna1", "tan1",
+         "darkblue", "slateblue4", "slateblue3", 
+         "lightblue", "beige", "white")
+
+
+
+pheatmap(data.matrix(sqrt(t(sa))),
+         color = rev(col),
+         cluster_cols = FALSE,
+         scale = "row", treeheight_row = 0,
+         treeheight_col = 12,
+         fontsize_row = 7)
+
+
+```
+
+
+```{r}
+
+clusterPics <-
+  ggarrange(p123, labels = "a", ncol = 1, heights = c(4,4),
+          ggarrange(dendo, fvizClust, 
+                    ncol=2, nrow=1, labels = c("b", "c"), heights = c(4,4)))
+clusterPics
+
+ggsave("Figure03_Nov2020_NPJ.pdf", 
+       plot = clusterPics,
+       device = "pdf",
+       scale = 1,
+       width = 7.62,
+       height = 8.15,
+       dpi = 1200)
+dev.off()
+
+
+```
+
+
+
+
+
+```{r}
+metaData_k1 <- subset(spatial_metaData2, k == "k1") #96 observations
+metaData_k2 <- subset(spatial_metaData2, k == "k2") # 19 observations
+metaData_k3 <- subset(spatial_metaData2, k == "k3") # 5 observations
+
+
+k1_n = int(length(rownames(metaData_k1)))
+k2_n = int(length(rownames(metaData_k2)))
+k3_n = int(length(rownames(metaData_k3)))
+
+
+k1_median_age = median(metaData_k1$Age_in_months) #25.5 months
+k2_median_age = median(metaData_k2$Age_in_months) #10 months
+k3_median_age = median(metaData_k3$Age_in_months) # 5 months
+
+
+k1_mean_age = mean(metaData_k1$Age_in_months) #25.5 months
+k2_mean_age = mean(metaData_k2$Age_in_months) #10 months
+k3_mean_age = mean(metaData_k3$Age_in_months) # 5 months
+
+
+k1_median_shannon <- median(metaData_k1$shannonDiv)
+k2_median_shannon <- median(metaData_k2$shannonDiv)
+k3_median_shannon <- median(metaData_k3$shannonDiv)
+
+
+count_CF_all <- 0
+count_healthy_all <- 0
+count_CF_k1 <- 0
+count_healthy_k1 <- 0
+count_CF_k2 <- 0
+count_healthy_k2 <- 0
+count_CF_k3 <- 0
+count_healthy_k3 <- 0
+
+
+for (items in spatial_metaData2$state){
+  if(items == "CF") count_CF_all = count_CF_all + 1
+  else count_healthy_all = count_healthy_all + 1
+}
+
+for (items in metaData_k1$state){
+  if(items == "CF") count_CF_k1 = count_CF_k1 + 1
+  else count_healthy_k1 = count_healthy_k1 + 1
+}
+
+for (items in metaData_k2$state){
+  if(items == "CF") count_CF_k2 = count_CF_k2 + 1
+  else count_healthy_k2 = count_healthy_k2 + 1
+}
+
+for (items in metaData_k3$state){
+  if(items == "CF") count_CF_k3 = count_CF_k3 + 1
+  else count_healthy_k3 = count_healthy_k3 + 1
+}
+
+
+count_PA_all <- 0
+count_noPA_all <- 0
+count_PA_k1 <- 0
+count_noPA_k1 <- 0
+count_PA_k2 <- 0
+count_noPA_k2 <- 0
+count_PA_k3 <- 0
+count_noPA_k3 <- 0
+
+
+for (items in spatial_metaData2$PA_category){
+  if(items == "present") count_PA_all = count_PA_all + 1
+  else count_noPA_all = count_noPA_all + 1
+}
+
+for (items in metaData_k1$PA_category){
+  if(items == "present") count_PA_k1 = count_PA_k1 + 1
+  else count_noPA_k1 = count_noPA_k1 + 1
+}
+
+for (items in metaData_k2$PA_category){
+  if(items == "present") count_PA_k2 = count_PA_k2 + 1
+  else count_noPA_k2 = count_noPA_k2 + 1
+}
+
+for (items in metaData_k3$PA_category){
+  if(items == "present") count_PA_k3 = count_PA_k3 + 1
+  else count_noPA_k3 = count_noPA_k3 + 1
+}
+
+
+count_antibitoics_all <- 0
+count_noAntibitoics_all <- 0
+count_antibitoics_k1 <- 0
+count_noAntibitoics_k1 <- 0
+count_antibitoics_k2 <- 0
+count_noAntibitoics_k2 <- 0
+count_antibitoics_k3 <- 0
+count_noAntibitoics_k3 <- 0
+
+
+for (items in metaData$Antibiotics){
+  if(items == "y") count_antibitoics_all = count_antibitoics_all + 1
+  else count_noAntibitoics_all = count_noAntibitoics_all + 1
+}
+
+for (items in metaData_k1$Antibiotics){
+  if(items == "y") count_antibitoics_k1 = count_antibitoics_k1 + 1
+  else count_noAntibitoics_k1 = count_noAntibitoics_k1 + 1
+}
+
+for (items in metaData_k2$Antibiotics){
+  if(items == "y") count_antibitoics_k2 = count_antibitoics_k2 + 1
+  else count_noAntibitoics_k2 = count_noAntibitoics_k2 + 1
+}
+
+for (items in metaData_k3$Antibiotics){
+  if(items == "y") count_antibitoics_k3 = count_antibitoics_k3 + 1
+  else count_noAntibitoics_k3 = count_noAntibitoics_k3 + 1
+}
+
+
+
+k_n <- c(k1_n, k2_n, k3_n)
+#k_median_age <- c(k1_median_age, k2_median_age, k3_median_age)
+#k_mean_age <- c(k1_mean_age, k2_mean_age, k3_mean_age)
+k_n_CF <- c(count_CF_k1, count_CF_k2, count_CF_k3)
+k_n_healthy <- c(count_healthy_k1, count_healthy_k2, count_healthy_k3)
+k_median_shannon <- c(k1_median_shannon, k2_median_shannon, k3_median_shannon)
+k_n_PA <- c(count_PA_k1, count_PA_k2, count_PA_k3)
+k_n_noPA <- c(count_noPA_k1, count_noPA_k2, count_noPA_k3)
+
+k_n_antibiotics <- c(count_antibitoics_k1, count_antibitoics_k2,
+                     count_antibitoics_k3)
+k_n_NOantibiotics <- c(count_noAntibitoics_k1, count_noAntibitoics_k2,
+                       count_noAntibitoics_k3)
+
+
+k_table <- rbind(k_n_CF, k_n_healthy, k_median_shannon,
+                 k_n_PA, k_n_noPA, k_n_antibiotics, 
+                 k_n_NOantibiotics)
+
+k_table <- data.frame(k_table)
+colnames(k_table) <- c("k1", "k2", "k3")
+k_table <- round(k_table,1)
+k_table <- data.frame(t(k_table))
+#k_table$k_n <- round(k_table$k_n / 94 * 100, 0)
+k_table$k_n_CF <- round(k_table$k_n_CF / k_n * 100, 0)
+k_table$k_n_healthy <- round(k_table$k_n_healthy / k_n * 100, 0)
+k_table$k_n_PA <- round(k_table$k_n_PA / k_n * 100, 0)
+k_table$k_n_noPA <- round(k_table$k_n_noPA / k_n * 100, 0)
+k_table$k_n_antibiotics <- round(k_table$k_n_antibiotics / k_n * 100, 0)
+k_table$k_n_NOantibiotics <- round(k_table$k_n_NOantibiotics / k_n * 100, 0)
+
+k_table <- data.frame(t(k_table))
+k_table$parameters <- rownames(k_table)
+
+k_table_long <- gather(k_table, key="k", value="abundance", -parameters)
+
+
+k_table_long$fillWith <-
+  c("Y", "N", "Y", "N", "Y", "N",
+    "Y", "N", "Y", "N", "Y", "N",
+    "Y", "N", "Y", "N", "Y", "N")
+k_table_long$parameters <-
+  str_replace(k_table_long$parameters,
+              "k_n_CF", "CF")
+k_table_long$parameters <-
+  str_replace(k_table_long$parameters,
+              "k_n_healthy", "CF")
+k_table_long$parameters <-
+  str_replace(k_table_long$parameters,
+              "k_n_antibiotics", "Antibiotics")
+k_table_long$parameters <-
+  str_replace(k_table_long$parameters,
+              "k_n_NOantibiotics", "Antibiotics")
+k_table_long$parameters <-
+  str_replace(k_table_long$parameters,
+              "k_n_PA", "Pseudomonas")
+k_table_long$parameters <-
+  str_replace(k_table_long$parameters,
+              "k_n_noPA", "Pseudomonas")
+
+#k_table_long <- subset(k_table_long,
+ #                      parameters == c("CF", "Antibiotics", "Pseudomonas"))
+
+
+k_table_long$parameters <- factor(k_table_long$parameters,
+                                  levels = c("Pseudomonas", "Antibiotics", "CF"))
+ChildrenPara <-
+  ggplot(k_table_long, aes(x = parameters, 
+                           y = abundance)) + 
+  geom_col(aes(fill = fillWith)) +
+  #scale_x_discrete(breaks=c("k_n_healthy","k_n_noPA", 
+   #                         "k_n_NOantibiotics"),
+    #    labels=c("Healthy", 
+     #            "No antibiotics")) +
+  theme_pubr(base_size = 14, base_family = "Helvetica") +
+  scale_fill_manual(values = c("palegreen4", "red4")) +
+  theme(axis.text.y = element_text(colour = "black", size = 14, family = "Helvetica"), 
+    axis.text.x = element_text(colour = "black", size = 14, 
+                               family = "Helvetica", angle = 90, vjust=0.5, hjust=1),
+    axis.title.y = element_text(size = 14, family = "Helvetica"), 
+    panel.border = element_rect(colour = "black", fill = NA, size = 1.0),
+    axis.title.x = element_text(size = 14, colour = "black", family = "Helvetica"), 
+    panel.background = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(size=14)) +
+  xlab("") +
+  ylab("Proportion of children (in %)") +
+  facet_wrap(~k) +
+  coord_flip()
+ChildrenPara
+
+```
+
+
+```{r}
+
+# create kruskal.wallis statistic table
+spatial_metaData2$k <- factor(spatial_metaData2$k)
+kruskal.test(spatial_metaData2$abundant_bacterialBurden, spatial_metaData2$k)
+epsilonSquared(spatial_metaData2$abundant_bacterialBurden, 
+               spatial_metaData2$k, ci = TRUE)
+
+conover.test(spatial_metaData2$abundant_bacterialBurden, 
+             g=spatial_metaData2$k, 
+             method="bh", kw=TRUE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+
+conover.test(spatial_metaData2$BCPHC_PA, 
+             g=spatial_metaData2$k, 
+             method="bh", kw=FALSE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+
+conover.test(spatial_metaData2$abundant_specNumber, 
+             g=spatial_metaData2$k, 
+             method="bh", kw=FALSE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+
+conover.test(spatial_metaData2$BCPHC_PA, 
+             g=spatial_metaData2$k, 
+             method="bh", kw=FALSE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+
+
+
+my_comparisons1 <- list(c("k1", "k2"), 
+                         c("k1", "k3"), 
+                         c("k2", "k3"))
+
+shannon_vis <- ggerrorplot(spatial_metaData2, 
+                                   x = "k", 
+                                   y = "abundant_shannon",
+                                   xlab = "",
+                                   ylab = "SDI\n",
+                                   desc_stat = "median", 
+                                   ggtheme = theme_pubr(base_size = 14,
+                                                        base_family = "Helvetica",
+                                                        border = TRUE),
+                                   add = c("boxplot", "point"), 
+                                   add.params = list(color = "black")) +
+  scale_y_continuous(limits = c(0,8), breaks = c(0,2.5,5)) +
+  labs(title = "", subtitle = "Core species", caption = "") 
+
+shannon_vis
+
+
+bacterialBurden_vis <- ggerrorplot(spatial_metaData2, 
+                                   x = "k", 
+                                   y = "abundant_bacterialBurden",
+                                   main = "",
+                                   xlab = "",
+                                   ylab = "Bacterial load\n",
+                                   desc_stat = "median", 
+                                   ggtheme = theme_pubr(base_size = 14,
+                                                        base_family = "Helvetica",
+                                                        border = TRUE),
+                                   add = c("boxplot", "point"), 
+                                   add.params = list(color = "black")) +
+  ylim(0,40010) +
+  labs(title = "", subtitle = "Core species", caption = "") +
+  stat_compare_means(comparisons = my_comparisons1,
+                     test = "kruskal.test", label = "p.signif",
+                     family = "Helvetica", size = 4,
+                     label.y = c(15000,25000,35000)) 
+
+
+aab <- grid.arrange(shannon_vis, bacterialBurden_vis, nrow = 1)
+
+
+
+# Impact of rare species ###
+kruskal.test(spatial_metaData2$rare_bacterialBurden, 
+             spatial_metaData2$k)
+epsilonSquared(spatial_metaData2$rare_bacterialBurden, 
+               spatial_metaData2$k, ci = TRUE)
+
+kruskal.test(spatial_metaData2$rare_shannon, spatial_metaData2$k)
+
+epsilonSquared(spatial_metaData2$rare_shannon, 
+               spatial_metaData2$k, ci = TRUE)
+
+conover.test(spatial_metaData2$rare_specNumber, 
+             g=spatial_metaData2$k, 
+             method="bh", kw=FALSE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+conover.test(spatial_metaData2$rare_shannon, 
+             g=spatial_metaData2$k, 
+             method="bh", kw=FALSE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+
+conover.test(spatial_metaData2$rare_simpson, 
+             g=spatial_metaData2$k, 
+             method="bh", kw=FALSE, label=TRUE, wrap=FALSE, 
+             table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=TRUE)
+
+
+
+
+spatial_metaData2$k <- factor(spatial_metaData2$k)
+my_comparisons1 <- list(c("k1", "k2"),
+                        c("k1", "k3"))
+
+Rare_shannon_vis <- ggerrorplot(spatial_metaData2, 
+                                   x = "k", 
+                                   y = "rare_shannon",
+                                   main = "",
+                                   xlab = "",
+                                   ylab = "SDI\n",
+                                   desc_stat = "median", 
+                                   ggtheme = theme_pubr(base_size = 14,
+                                                        base_family = "Helvetica",
+                                                        border = TRUE),
+                                   add = c("boxplot", "point"), 
+                                   add.params = list(color = "black")) +
+  scale_y_continuous(limits = c(0,8), breaks = c(0,2.5,5.0)) +
+  labs(title = "", subtitle = "Rare species", caption = "") +
+  stat_compare_means(comparisons = my_comparisons1,
+                     test = "kruskal.test", label = "p.signif",
+                     label.y = c(5.5,6.5), family = "Helvetica",
+                     size = 4) 
+
+
+my_comparisons3 <- list(c("k1", "k2"),
+                        c("k1", "k3"),
+                        c("k2", "k3"))
+
+rare_bacterialBurden_vis <- ggerrorplot(spatial_metaData2, 
+                                   x = "k", 
+                                   y = "rare_bacterialBurden",
+                                   main = "",
+                                   xlab = "",
+                                   ylab = "\nBacterial load\n",
+                                   desc_stat = "median", 
+                                   ggtheme = theme_pubr(base_size = 14,
+                                                        base_family = "Helvetica",
+                                                        border = TRUE),
+                                   add = c("boxplot", "point"), 
+                                   add.params = list(color = "black")) +
+  labs(title = "", subtitle = "Rare species", caption = "") +
+  ylim(0,1000) +
+  stat_compare_means(comparisons = my_comparisons3,
+                     test = "kruskal.test", label = "p.signif",
+                     label.y = c(650,800, 950), family = "Helvetica",
+                     size = 4) 
+rare_bacterialBurden_vis
+
+
+
+aac <-
+  grid.arrange(Rare_shannon_vis,
+             rare_bacterialBurden_vis,
+             nrow =1)
+
+
+
+kParameter <-
+  ggarrange(ChildrenPara, labels = "a", heights = c(3,4,4), ncol = 1,
+            ggarrange(bacterialBurden_vis, Rare_shannon_vis, 
+                      rare_bacterialBurden_vis, labels = c("b", "c", "d"),
+                   ncol=3))
+kParameter
+
+#ggsave("Figure04_Nov2020_NPJ.pdf", 
+ #      plot = kParameter,
+  #     device = "pdf",
+   #    scale = 1,
+    #   width = 8.21,
+     #  height = 5.71,
+      # dpi = 1200)
+#dev.off()
+
+
+
+
+```
+
+
+# Longitudinal analysis ######
+```{r}
+
+metaData_CF <- subset(spatial_metaData2, state == "CF")
+spatial_coreSpecies <- rownames(spatial_coreSpecies1)
+spatial_coreSpecies
+
+HealthyRemove <- c("KGCF01", "KGCF02", "KGCF03", "KGCF04", "KGCF05", "KGCF06",
+                   "KGCF07", "KGCF10", "KGCF11", "KGCF12", "KGCF13", "KGCF14", "KGCF15",
+                   "KGCF16", "KGCF17", "KGCF18", "KGCF19", "KGCF21", "KGCF22", "KGCF24",
+                   "KGCF25", "KGCF26", "KGCF27", "KGCF28", "KGCF29", "KGCF30", "KGCF32",
+                   "KGCF33", "KGCF34", "KGCF35", "KGCF36", "KGCF37", "KGCF38", "KGCF39", "KGCF40",
+                   "KGCF41", "KGCF42", "KGCF43", "KGCF44", "KGCF45", "KGCF46", "KGCF47", "KGCF48",
+                   "KGCF49", "KGCF50", "KGCF51", "KGCF52", "KGCF53", "KGCF55",
+                   "KGCF56", "KGCF57", "KGCF58")
+                   # "EMCF16", "MCF03s1")
+
+metaData_CF <- metaData_CF[ !(rownames(metaData_CF) %in% HealthyRemove), ]
+metaData_CF <- data.frame(metaData_CF)
+
+CF_coreSpecies <- spatial_coreSpecies1[ !(rownames(spatial_coreSpecies1) %in% HealthyRemove), ]
+CF_coreSpecies <- data.frame(CF_coreSpecies)
+
+
+# set seed to make analysis reproducible
+set.seed(2)
+
+# for most abundant species
+mds_speciesLONGI <- metaMDS(sqrt(CF_coreSpecies[,1:29]), distance = "bray",
+                       k=3, trymax = 100,
+                       autotransform = FALSE)
+
+
+nmds <- mds_speciesLONGI
+nmds$points
+stressplot(nmds)
+data.scoresLONGI = as.data.frame(scores(nmds))
+rownames(data.scoresLONGI)
+data.scoresLONGI$PI_PS = metaData_CF$PI_PS
+
+data.scoresLONGI$MutationType = metaData_CF$MutationType
+data.scoresLONGI$Antibiotics = metaData_CF$Antibiotics
+data.scoresLONGI$PA_category = metaData_CF$PA_category
+data.scoresLONGI$ageGroup2 = metaData_CF$ageGroup2
+data.scoresLONGI$Staphylococcus = metaData_CF$SA_category
+data.scoresLONGI$Weight = round(as.numeric(as.character(metaData_CF$Weight)),2)
+data.scoresLONGI$Height = round(as.numeric(as.character(metaData_CF$Height)), 2)
+data.scoresLONGI$BMI = round(as.numeric(as.character(metaData_CF$BMI)),2)
+data.scoresLONGI$FVC1 = round(as.numeric(as.character(metaData_CF$FVC1)),2)
+data.scoresLONGI$LCI = round(as.numeric(as.character(metaData_CF$LCI)),2)
+
+metaData_CF$Weight = round(as.numeric(as.character(metaData_CF$Weight)),2)
+metaData_CF$Height = round(as.numeric(as.character(metaData_CF$Height)), 2)
+metaData_CF$BMI = round(as.numeric(as.character(metaData_CF$BMI)),2)
+metaData_CF$FVC1 = round(as.numeric(as.character(metaData_CF$FVC1)),2)
+metaData_CF$LCI = round(as.numeric(as.character(metaData_CF$LCI)),2)
+
+data.scoresLONGI$site <- rownames(data.scoresLONGI)
+
+metaDataENV <- 
+  select(data.scoresLONGI, c(PI_PS, MutationType,
+                        Antibiotics,PA_category, ageGroup2, Staphylococcus,
+                        Weight, Height, BMI, FVC1, LCI)) 
+
+data.envit <- envfit(nmds, metaDataENV, permutation = 999, na.rm=TRUE)
+data.envit
+
+
+p123_CF <- 
+  ggplot() +
+  geom_point(data=data.scoresLONGI, 
+             aes(x=NMDS1, y=NMDS2, color=PI_PS, size=BMI), alpha=0.5) +
+  stat_ellipse(data=data.scoresLONGI,
+              aes(x=NMDS1, y=NMDS2, color=PI_PS, fill=PI_PS), geom="polygon", alpha=0.1) +
+  xlim(-2.0, 2.0) +
+
+  ylim(-1.0, 1.0) +
+  ylab("\n\n NMDS2") +
+  theme_pubr(base_size = 12, border = TRUE, legend = "right") +
+  labs(color="PI_PS", fill="PI_PS", size="BMI") +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank()) +
+  guides(color = guide_legend(ncol=1)) 
+
+
+
+listRow_longitudinal <- 
+  rownames(metaData)[grep("MCF", rownames(metaData))]
+listRow_longitudinal <- listRow_longitudinal[30:68]
+
+metaData_longi <- metaData[rownames(metaData) %in% listRow_longitudinal,]
+
+metaData_longi$ID <- rownames(metaData_longi)
+metaData_longi_analysis <- select(metaData_longi,
+                                  ID, PI_PS, MutationType, Height, Weight, BMI,
+                                  ageGroup, PA_category, SA_category,
+                                  LONGI_abundant_bacterialBurden, 
+                                  LONGI_abundant_shannon,
+                                  LONGI_rare_bacterialBurden,
+                                  LONGI_rare_shannon)
+
+metaData_longi_analysis$Weight <- as.numeric(as.character(metaData_longi_analysis$Weight))
+metaData_longi_analysis$Height <- as.numeric(as.character(metaData_longi_analysis$Height))
+metaData_longi_analysis$BMI <- as.numeric(as.character(metaData_longi_analysis$BMI))
+
+metaData_longi_analysis0 <- na.omit(metaData_longi_analysis)
+metaData_longi_analysis0$subjects <- c(1,1,1,1,1,1,1,2,2,2,3,3,4,5,5,6,6,6,6,7,7,7,8,8,9,9,9,10,10,
+                                       11,11,11,12,12,13)
+metaData_longi_analysis0$absAbundance <- metaData_longi_analysis0$LONGI_abundant_bacterialBurden + metaData_longi_analysis0$LONGI_rare_bacterialBurden
+# Random effects model
+library(lme4)
+library(nlme)
+
+modE <-
+  lmer(absAbundance ~ PI_PS + MutationType + BMI +
+         (1 | subjects),
+       data=metaData_longi_analysis0, REML = FALSE)
+
+modE_2 <-
+  lmer(absAbundance ~ 1 + 
+         (1 | subjects),
+       data=metaData_longi_analysis0, REML = FALSE)
+
+anova(modE, modE_2)
+
+# Pancreatic state, type of mutation and BMI does not affect absolute abundance of core and rare species
+#(Chi-Square value(df=4)=0.7, p=0.96)
+
+modE_div <-
+  lmer(LONGI_abundant_shannon ~ PI_PS + MutationType + BMI +
+         (1 | subjects),
+       data=metaData_longi_analysis0, REML = FALSE)
+
+modE_2_div <-
+  lmer(LONGI_abundant_shannon ~ 1 + 
+         (1 | subjects),
+       data=metaData_longi_analysis0, REML = FALSE)
+
+anova(modE_div, modE_2_div)
+
+
+
+modE_div_rare <-
+  lmer(LONGI_rare_shannon ~ PI_PS + MutationType + BMI +
+         (1 | subjects),
+       data=metaData_longi_analysis0, REML = FALSE)
+
+modE_2_div_rare <-
+  lmer(LONGI_rare_shannon ~ 1 + 
+         (1 | subjects),
+       data=metaData_longi_analysis0, REML = FALSE)
+
+anova(modE_div_rare, modE_2_div_rare)
+
+
+
+```
+
+
+```{r}
+
+mds_species2 <- metaMDS(sqrt(longitudinal_coreSpecies[,1:29]), distance = "bray",
+                       k=3, trymax = 100,
+                       autotransform = FALSE)
+
+
+#stressplot(nmds)
+data.scoresNew = as.data.frame(scores(mds_species2))
+data.scoresNew$Patient <- metaData$Patient
+
+grp <- factor(data.scoresNew$Patient, 
+         levels = c("EMCF","KGCF",
+                    "MCF01", "MCF02", "MCF03", "MCF04",
+                    "MCF05", "MCF06", "MCF07", "MCF08",
+                    "MCF09", "MCF10", "MCF11", "MCF12", "CF"))
+
+grp <- str_replace_all(grp, "EMCF", "CF")
+grp <- str_replace_all(grp, "KGCF", "Healthy")
+#grp <- str_replace(grp, "MCF13s1", "CF")
+grp <- str_replace(grp, "MCF01", "CF01")
+grp <- str_replace(grp, "MCF02", "CF02")
+#grp <- str_replace(grp, "MCF03", "CF03")
+grp <- str_replace(grp, "MCF04", "CF04")
+grp <- str_replace(grp, "MCF05", "CF05")
+grp <- str_replace(grp, "MCF06", "CF06")
+grp <- str_replace(grp, "MCF07", "CF07")
+grp <- str_replace(grp, "MCF08", "CF08")
+grp <- str_replace(grp, "MCF09", "CF09")
+grp <- str_replace(grp, "MCF10", "CF10")
+grp <- str_replace(grp, "MCF11", "CF11")
+grp <- str_replace(grp, "MCF12", "CF12")
+
+data.scoresNew$grp <- grp
+data.scoresNew$grp <- factor(data.scoresNew$grp, levels = c("CF","Healthy", "CF01", "CF02", 
+                                        "CF04", "CF05", "CF06", 
+                                        "CF07", "CF08", "CF09", 
+                                        "CF10", "CF11", "CF12"))
+
+
+
+
+species.scores <- as.data.frame(scores(mds_species2, "species"))  
+species.scores$species <- rownames(species.scores)  
+
+
+grp.1 <- 
+  data.scoresNew[data.scoresNew$grp == "CF", 
+              ][chull(data.scoresNew[data.scoresNew$grp == "CF",
+                                  c("NMDS1", 
+                                    "NMDS2", 
+                                    "NMDS3")]), ]  
+
+grp.2 <- data.scoresNew[data.scoresNew$grp == "Healthy",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "Healthy", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]  
+
+grp.3 <- data.scoresNew[data.scoresNew$grp == "CF01",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF01", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+
+grp.4 <- data.scoresNew[data.scoresNew$grp == "CF02",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF02", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+
+grp.6 <- data.scoresNew[data.scoresNew$grp == "CF04",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF04", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+grp.7 <- data.scoresNew[data.scoresNew$grp == "CF05",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF05", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+grp.8 <- data.scoresNew[data.scoresNew$grp == "CF06",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF06", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+grp.9 <- data.scoresNew[data.scoresNew$grp == "CF07",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF07", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+grp.10 <- data.scoresNew[data.scoresNew$grp == "CF08",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF08", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+grp.11 <- data.scoresNew[data.scoresNew$grp == "CF09",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF09", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+grp.12 <- data.scoresNew[data.scoresNew$grp == "CF10",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF10", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+grp.13 <- data.scoresNew[data.scoresNew$grp == "CF11",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF11", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+grp.14 <- data.scoresNew[data.scoresNew$grp == "CF12",
+                     ][chull(data.scoresNew[data.scoresNew$grp == "CF12", 
+                                         c("NMDS1", 
+                                           "NMDS2", 
+                                           "NMDS3")]), ]
+
+
+hull.data <- rbind(grp.1, grp.2, grp.3, grp.4, grp.6,
+                   grp.7, grp.8, grp.9, grp.10, grp.11, grp.12,
+                   grp.13, grp.14)   
+hull.data
+```
+
+```{r, fig.width=8, fig.height=8}
+spread <- 
+  ggplot() + 
+  geom_polygon(data=hull.data,
+               aes(x=NMDS1,
+                   y=NMDS2,
+                   z=NMDS3,
+                   fill=grp,
+                   group=grp),
+               alpha=0.6) + 
+
+  geom_point(data=data.scoresNew, 
+             aes(x=NMDS1,
+                 y=NMDS2,
+                 z=NMDS3,
+                 colour=grp),
+             size=2) + 
+  theme_pubr(base_size = 12, border = TRUE) +
+  scale_colour_manual(values=c("CF" = "grey48", 
+                               "Healthy" = "grey77",
+                               "CF01" = "red",
+                               "CF02" = "green",
+                               "CF03" = "blue",
+                               "CF04" = "orange",
+                               "CF05" = "violet",
+                               "CF06" = "aquamarine4",
+                               "CF07" = "yellow",
+                               "CF08" = "magenta",
+                               "CF09" = "black",
+                               "CF10" = "cyan",
+                               "CF11" = "darkslateblue",
+                               "CF12" = "orangered4")) +
+  scale_fill_manual(values = c("CF" = "grey48", 
+                               "Healthy" = "grey77",
+                               "CF01" = "red",
+                               "CF02" = "green",
+                               "CF03" = "blue",
+                               "CF04" = "orange",
+                               "CF05" = "violet",
+                               "CF06" = "aquamarine4",
+                               "CF07" = "yellow",
+                               "CF08" = "magenta",
+                               "CF09" = "black",
+                               "CF10" = "cyan",
+                               "CF11" = "darkslateblue",
+                               "CF12" = "orangered4")) +
+  theme(axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.text = element_text(size = 12, colour ="black"), 
+        legend.position = "right", 
+        legend.title = element_text(size = 12, colour = "black", face = "bold"), 
+        legend.key=element_blank()) + 
+  guides(colour = guide_legend(ncol=1)) +
+  labs(x = "NMDS1", colour = "Samples", y = "NMDS2", fill = "Samples", 
+       group = "Samples", grp = "Samples") 
+
+
+LongiPlots <-
+  ggarrange(spread, p123_CF, nrow=1, 
+          ncol=2, labels= c("a", "b"))
+
+#ggsave(LongiPlots,
+ #      file="SupplementaryFigure04.tiff",
+  #     width = 11.5,
+   #    height = 6.91,
+    #   dpi=1200)
+
+
+```
+
+```{r}
+sessionInfo()
+
+```
+
