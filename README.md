@@ -12,11 +12,11 @@ Airway metagenome of healthy and CF infants
 <br/>
 
 **Reference database** <br/>
-The index of the reference database for the read alignment process is available from https://drive.google.com/open?id=1gl6KiY0gOZiz45ulZaWQCLS6A6Su_hrX. <br/>
+The index of the reference database is available from <br/> https://drive.google.com/open?id=1gl6KiY0gOZiz45ulZaWQCLS6A6Su_hrX. <br/>
 The multi-FASTA file can also be obtained (see instructions below).
 
 ```bash
-wget https://sync.academiccloud.de/index.php/s/Zx5YDzT9nnblie4/download
+https://sync.academiccloud.de/index.php/s/Zx5YDzT9nnblie4/download
 
 # Unzip the reference database 
 gunzip complete_bacterialRefSeqs_201910_2.fasta
